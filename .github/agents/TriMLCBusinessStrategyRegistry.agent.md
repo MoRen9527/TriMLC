@@ -14,7 +14,7 @@ user-invocable: true
 - 边界：不做技术实现裁决（归 CTO / `TriMLCCodeRegistry`）；不做产品功能面细节（归 `TriMLCProductRegistry`）；不代替中央 `BusinessStrategy` 裁决。
 - 上游：`TriMetaverse/BusinessStrategy`（中央商业真源）；CEO 六决策（2026-08-21，决策④：TriMLC 保留定名＋文档锚定）。
 - 消费方：`TriMLCProductRegistry`、`TriMLCCodeRegistry`；中央 `TriMetaverseBusinessStrategyRegistry`（模块 registry fan-in）。
-- owner：待指派（立项期由编排层代管；模块 owner 指派归 CEOChiefOfStaff / BusinessStrategy）。
+- owner：BusinessStrategy（模块边界与优先级口径，`../TriMetaverse/docs/workflow/github-repo-governance.md` §8「中央战略与模块边界裁决」）；模块实例级维护 owner 待指派（立项期由编排层代管）。
 
 ## 核心职责
 

@@ -33,7 +33,7 @@
 ## 待办（后续批次）
 
 1. git init ＋ dev 分支 ＋ 首次 commit（编排层补，本批无 shell 权限）
-2. `docs/` 六件套骨架（engineering/product/registry/workflow/training/execution）——架构文档 §2 模块骨架纪律项，本批未建
-3. 本地 CodeGraph 初始化——同上骨架纪律项，本批未建
+2. `docs/` 六件套骨架（engineering/product/registry/workflow/training/execution）——架构文档 §2＋company-governance-state.md「模块标配」纪律项，本批未建；缺失标配按治理条款由 CTO 在发现当轮或下一轮优先补齐
+3. 本地 CodeGraph 初始化——同上骨架纪律项，本批未建；补齐 owner 同上（CTO）
 4. FADE claude 宿主实际发布（binding/live 渲染）——口径已立，发布归后续批次
 5. bridge-1 客户端实现（ssh 隧道＋三原语转发）——R6 bridge 线，依赖 TriMMC 侧 token＋收环先行

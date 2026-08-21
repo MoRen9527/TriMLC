@@ -11,6 +11,10 @@ npm-debug.log*
 .env.*
 !.env.example
 
+# 治理标配（company-governance-state.md「模块标配」：.gitignore 至少排除 .codegraph/ 与 .cursor/）
+.codegraph/
+.cursor/
+
 # 编辑器与系统
 .DS_Store
 Thumbs.db

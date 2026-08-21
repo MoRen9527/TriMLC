@@ -14,7 +14,7 @@ user-invocable: true
 - 边界：R4 §七裁决 TriMLC 无 daemon 侦听面（bridge 客户端形态）——任何运行时代码、daemon 或侦听面新增都是边界违反，须升级 CTO 与 BusinessStrategy。
 - 上游：`TriMLCBusinessStrategyRegistry`；R4 架构分析（同目录分析树）。
 - 消费方：中央 `TriMetaverseCodeRegistry`（模块 registry fan-in）；bridge-1 实施批（未来）。
-- owner：待指派（立项期由编排层代管；模块 owner 指派归 CEOChiefOfStaff / BusinessStrategy）。
+- owner：CTO 小狄（模块代码事实与技术门禁，`../TriMetaverse/docs/workflow/github-repo-governance.md` §8）；模块实例级维护 owner 待指派（立项期由编排层代管）。
 
 ## 核心职责
 
