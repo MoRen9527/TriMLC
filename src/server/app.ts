@@ -1,6 +1,6 @@
 // ── TriLC Local HTTP Server ──
 // Exposes the same API surface as TriMC:
-//   GET  /healthz              → { ok: true, service: 'trilc' }
+//   GET  /healthz              → { ok: true, service: 'trimlc' }
 //   GET  /v1/models            → Anthropic-compatible model list
 //   GET  /models               → OpenAI-compatible model list
 //   POST /v1/messages          → Anthropic Messages API (SSE + JSON)
@@ -1656,8 +1656,12 @@ export function createTriLCApp(env: TriLCEnv) {
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(JSON.stringify({
             ok: true,
-            service: 'trilc',
+            service: 'trimlc',
             serverTime: new Date().toISOString(),
+            // LG-033 mc_link/mc_peer 双字段（BOD 热重建批 2026-09-08，TriMLC 面
+            // peer=trimmc）；trimc 旧字段保留一版双写（消费方全迁移后下批退役）。
+            mc_link: triMcOnline ? 'connected' : 'degraded',
+            mc_peer: 'trimmc',
             trimc: triMcOnline ? 'connected' : 'degraded',
             uptime,
             activeTasks,
