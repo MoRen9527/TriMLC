@@ -1660,6 +1660,13 @@ export function createTriLCApp(env: TriLCEnv) {
             serverTime: new Date().toISOString(),
             // LG-033 mc_link/mc_peer 双字段（BOD 热重建批 2026-09-08，TriMLC 面
             // peer=trimmc）；trimc 旧字段保留一版双写（消费方全迁移后下批退役）。
+            // 正名（BOD 派单 2026-09-10）：trimc=TriMC 时代遗留 wire 名（源流
+            // 8711 healthz 同名字段），与 mc_link 同值，语义=本 daemon→TriMMC
+            // 上游心跳链路态（探测 TRIMC_BASE_URL，现役 sg 8710），
+            // 与 TriRMC（fleet 值班面）无关。退役候消费方
+            // （TriCompany mc_link_check.py 兼容读、verify-trilc-24h.ps1）
+            // 迁移后另批；届时 trimcBaseUrl 变量族与 TRIMC_BASE_URL env
+            // 同步裁决（env 改名涉部署合同，须随 daemon 停起窗）。
             mc_link: triMcOnline ? 'connected' : 'degraded',
             mc_peer: 'trimmc',
             trimc: triMcOnline ? 'connected' : 'degraded',

@@ -263,6 +263,12 @@
 - transitionTo 转移表零改动（门禁 7）；两入口（TriPilot/trilc chat）零执行增量，只读呈现 firstCollab 状态（门禁 6）。
 - 单测 +6：链态门 409 / 合法转移逐级 / 跳级拒绝 / 回退拒绝 / 重放幂等 / 载荷校验。全量 415/416（1 fail = test/tui/components.test.ts 环境缺口既有，基线 409/410 口径不退化）。
 
+## healthz `trimc` 字段正名（2026-09-10，BOD 派单·CTO 小狄）
+
+- 8713 healthz `trimc` 字段=TriMC 时代遗留 wire 名，**真实指向 TriMMC（非 TriRMC）**：与 `mc_link` 同值双写、`mc_peer:"trimmc"` 硬编码（`src/server/app.ts` healthz 段，本批已加正名注释），语义=本 daemon→TriMMC 上游心跳链路态（探测 TRIMC_BASE_URL，现役 sg 8710）。字段源流=8711 时代 healthz 同名字段（LG-032 cutover runbook「trimc=connected 对 sg」），LG-033（2026-09-08）移植 8713 并增 mc_link/mc_peer 双字段。
+- 本批只做注释/文档正名，wire 字段不退役：消费方 TriCompany `runtime/cognition/mc_link_check.py`（兼容读，同批正名注释+打印行消歧）与 TriMetaverse `scripts/verify-trilc-24h.ps1`（打印）未迁移，退役候消费方迁移后另批；届时 src 内 `trimcBaseUrl` 变量族与 env `TRIMC_BASE_URL` 同步裁决（env 改名涉部署合同，须随 daemon 停起窗，勿热改）。
+- 运行实例注记（拉起源，顺带件）：现役 8713 进程 09-09 12:53:19+08 人工经常驻会话 Start-Process 启动（stdout.log/stderr.log 分文件重定向为指纹），非 v3 cmd（channel.log 命名）/非 schtasks（TriMLC-Channel 任务存在但 ACL 保护+属主 jedih 证伪）/非 cron；12:52:12 一次 UAC 无 env 首试写 `%LOCALAPPDATA%\trilc` 默认目录后短存退场——wave0 §三「trilc 重生态写手」候选即此（已退场无现役写手）。
+
 ## Sources
 
 - `../../src/runtime/`
