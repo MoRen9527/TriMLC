@@ -42,6 +42,7 @@ import {
   stopKeyCache,
 } from '../config/key-cache.js';
 import { TaskMirrorPusher } from '../mirror/pusher.js';
+import { startNotifyPoller } from '../notify/puller.js';
 import type { MirrorTaskSnapshot } from '../mirror/types.js';
 import {
   beginInteractiveSession,
@@ -1482,6 +1483,17 @@ export function createTriLCApp(env: TriLCEnv) {
   localBus.on('event', (event) => {
     if (event.type === 'node:degraded') mirrorPusher.onDegraded();
   });
+
+  // ── LG-036 跨面通知通道（方案 acaae9fc）：收端 poller+信箱可见面 ──
+  // TRIMC_NOTIFY_SG_URL 未配置=poller 不启动（零行为变化；默认关）。
+  let notifyPoller: { stop: () => void; tickOnce: () => Promise<{ pulled: number; delivered: number; failed: number }> } | null = null;
+  if (env.notifySgBaseUrl && env.notifySgToken) {
+    notifyPoller = startNotifyPoller({
+      sgBaseUrl: env.notifySgBaseUrl,
+      sgToken: env.notifySgToken,
+      targetSeat: env.notifyTargetSeat ?? 'bod',
+    });
+  }
 
   // ── ACT2: Update check handler ──
   const updateCheckHandler = createUpdateCheckHandler({
@@ -3263,6 +3275,27 @@ export function createTriLCApp(env: TriLCEnv) {
           return;
         }
 
+
+        // ── LG-036：信箱可见面（「信箱必须可见」GET 计数端点；X-Internal-Token 门内）──
+        if (req.url?.startsWith('/internal/v1/notify/mailbox')) {
+          const { mailboxSummary, markRead } = await import('../notify/letter-store.js');
+          if (req.method === 'GET') {
+            const summary = mailboxSummary();
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, ...summary }));
+            return;
+          }
+          if (req.method === 'POST') {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) chunks.push(chunk as Buffer);
+            let body: { message_id?: unknown } = {};
+            try { body = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as typeof body; } catch { /* keep empty */ }
+            const ok = typeof body.message_id === 'string' ? markRead(body.message_id) : false;
+            res.writeHead(ok ? 200 : 404, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok, message_id: body.message_id ?? null }));
+            return;
+          }
+        }
 
         // ── POST /internal/v1/tasks/submit ──
         // W30 S2: Submit user intent → returns sessionId + SSE stream endpoint.

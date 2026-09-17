@@ -2,6 +2,10 @@ export type TriLCEnv = {
   nodeId: string;
   port: number;
   trimcBaseUrl: string;
+  /** LG-036 跨面通知通道：sg TriMMC base+token（未配置=poller 不启动零行为）。 */
+  notifySgBaseUrl?: string;
+  notifySgToken?: string;
+  notifyTargetSeat?: string;
   openclawGatewayUrl: string;
   vscodiumGlueBaseUrl: string;
   /** TriModel configuration-plane API base URL (Phase 1: http://127.0.0.1:3333) */
@@ -158,6 +162,9 @@ export function readEnv(): TriLCEnv {
     nodeId,
     port: Number(process.env.TRILC_PORT ?? 8711),
     trimcBaseUrl: process.env.TRIMC_BASE_URL ?? 'http://127.0.0.1:8710',
+    notifySgBaseUrl: process.env.TRIMC_NOTIFY_SG_URL || undefined,
+    notifySgToken: process.env.TRIMC_NOTIFY_SG_TOKEN || undefined,
+    notifyTargetSeat: process.env.TRIMC_NOTIFY_TARGET_SEAT || 'bod',
     openclawGatewayUrl: process.env.OPENCLOW_GATEWAY_URL ?? 'ws://127.0.0.1:8822',
     vscodiumGlueBaseUrl: process.env.VSCODIUM_GLUE_BASE_URL ?? 'http://127.0.0.1:8730',
     trimodelApiUrl: process.env.TRILC_TRIMODEL_API_URL ?? 'http://127.0.0.1:3333',
