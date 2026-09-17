@@ -1,4 +1,4 @@
-﻿# Local code intelligence
+# Local code intelligence
 .codegraph/
 .cursor/
 
@@ -12,6 +12,8 @@ vendor/
 dist/
 build/
 coverage/
+*.log
+npm-debug.log*
 
 # Local env
 .env
@@ -21,3 +23,5 @@ coverage/
 # OS/editor noise
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/
