@@ -6,13 +6,15 @@
 // 重投，绝不静默）→ normal=信箱落箱即 delivered（信箱可见=送达达成，CPO 三态
 // 精简两级 done=P2）→ confirm 回 sg（forwarded 拉走确认在拉取后即发）。
 import { spawn } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { storeLetter, mailboxSummary, type NotifyLetter } from './letter-store.js';
 
 export interface NotifyPollerOptions {
   /** sg TriMMC base（如 http://sg-ip:8710）。未配置=poller 不启动（零行为）。 */
   sgBaseUrl: string;
   sgToken: string;
-  targetSeat: string;
+  /** 目标席（缺省回退链：env→seats.json 名册→'bod'——LG-036 MVP 单条）。 */
+  targetSeat?: string;
   intervalMs?: number;
   mailboxPath?: string;
   /** toast 注入缝（测试 mock；默认 powershell spawn）。 */
@@ -94,11 +96,25 @@ export function startNotifyPoller(opts: NotifyPollerOptions): NotifyPollerHandle
       const messages = Array.isArray(raw.messages) ? raw.messages : [];
       let delivered = 0;
       let failed = 0;
+      // 名册化寻址（2026-09-18 消费者切换）：target_seat 必须∈seats.json 席集
+      // （seats 文件缺失/解析坏=回退 targetSeat 单值——行为零变化）。
+      let seatRoster: Set<string> | null = null;
+      try {
+        const seatsPath = process.env.TRIMC_NOTIFY_SEATS_FILE;
+        if (seatsPath && existsSync(seatsPath)) {
+          const seatsDoc = JSON.parse(readFileSync(seatsPath, 'utf-8')) as { seats?: Array<{ seat?: string }> };
+          seatRoster = new Set((seatsDoc.seats ?? []).map((x) => x.seat).filter((x): x is string => typeof x === 'string'));
+        }
+      } catch { /* seats 缺失/坏=回退单值 */ }
       for (const m of messages) {
         const messageId = String(m.message_id ?? '');
         const urgent = m.urgent === 'urgent' ? 'urgent' as const : 'normal' as const;
         const title = String(m.title ?? '');
         const body = String(m.body ?? '');
+        const targetSeat = String(m.target_seat ?? opts.targetSeat ?? 'bod');
+        if (seatRoster && !seatRoster.has(targetSeat)) {
+          continue; // 名册外席位件不落箱（寻址校验；LG-012 正名制收端同族）
+        }
         if (!messageId) continue;
         // 拉走确认（forwarded）——先发，失败不阻断落箱（下轮 confirm 幂等重放）
         if (opts.onConfirm) await opts.onConfirm(messageId, 'forwarded');
