@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { platform } from 'node:os';
 import type { TriLCDaemonServiceConfig } from './daemon/service.js';
 // REQ-018: PID management lives in pidfile.ts (shared with the daemon).
-import { findProcessByPort, isProcessAlive, readPid, removePidFile, waitProcessExit } from './pidfile.js';
+import { findProcessByPort, isProcessAlive, readPid, removePidFile, verifyPortPidConsistency, waitProcessExit } from './pidfile.js';
 import { installTrimcTokenFetch } from './trimc-auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -280,6 +280,18 @@ async function cmdStop(port: number = DEFAULT_PORT): Promise<void> {
 
   // ── Case A: PID file present ──
   if (pid !== null) {
+    // 端口-pid 一致性校验（2026-09-18 CTO 裁）：pidfile 记载必须==port 现监听
+    // pid——不一致（陈旧文件/跨 daemon 写入）=拒绝 kill 防二次误杀（8711 双录
+    // 实锚；legacy trilc.pid 兼容读同样过本门）。
+    const consistency = await verifyPortPidConsistency(port, pid);
+    if (!consistency.ok) {
+      console.error(
+        `[trilc] refusing to stop: PID file records pid=${pid} but port ${port} ` +
+        `is currently owned by pid=${consistency.actualPid ?? 'none'} — ` +
+        'stale or cross-daemon pidfile. Remove the stale file manually if this is expected.',
+      );
+      return;
+    }
     if (isProcessAlive(pid)) {
       // Graceful HTTP shutdown first (Windows-compatible), then confirm exit.
       const shutdownOk = await gracefulShutdown(port);
