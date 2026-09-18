@@ -99,4 +99,38 @@ describe('LG-036 STE gate: TriMLC notify 端B', () => {
     handle.stop();
     assert.deepEqual(r, { pulled: 1, delivered: 1, failed: 0 }, 'urgent toast 成功=delivered');
   });
+  it('查漏⑦重投闭环第二轮：urgent 首轮 toast 失败 → 次轮成功 → delivered（重投语义完整闭环）', async () => {
+    const confirmed: Array<[string, string]> = [];
+    let toastOk = false;
+    const handle = startNotifyPoller({
+      sgBaseUrl: 'http://127.0.0.1:0', sgToken: 'ste', targetSeat: 'bod',
+      intervalMs: 3_600_000, mailboxPath,
+      onPull: async () => ({ ok: true, messages: [msg('ste-retry', 'urgent')] }),
+      onToast: async () => toastOk, // 首轮失败、次轮翻转成功
+      onConfirm: async (id, to) => { confirmed.push([id, to]); return true; },
+    });
+    const r1 = await handle.tickOnce();
+    assert.deepEqual(r1, { pulled: 1, delivered: 0, failed: 1 }, '首轮失败');
+    toastOk = true;
+    const r2 = await handle.tickOnce();
+    handle.stop();
+    assert.deepEqual(r2, { pulled: 1, delivered: 1, failed: 0 }, '次轮重投成功=闭环');
+    const deliveredJumps = confirmed.filter(([id, to]) => id === 'ste-retry' && to === 'delivered').length;
+    assert.equal(deliveredJumps, 1, 'delivered 确认恰一次（幂等不重复）');
+  });
+
+  it('查漏⑧混合批：urgent(失败)+normal(成功) 同轮逐条独立处理', async () => {
+    const handle = startNotifyPoller({
+      sgBaseUrl: 'http://127.0.0.1:0', sgToken: 'ste', targetSeat: 'bod',
+      intervalMs: 3_600_000, mailboxPath,
+      onPull: async () => ({ ok: true, messages: [msg('ste-mix-u', 'urgent'), msg('ste-mix-n', 'normal')] }),
+      onToast: async () => false, // urgent 末跳失败
+      onConfirm: async () => true,
+    });
+    const r = await handle.tickOnce();
+    handle.stop();
+    assert.deepEqual(r, { pulled: 2, delivered: 1, failed: 1 }, '混合批逐条独立：normal 送达不因 urgent 失败连坐');
+    const mb = mailboxSummary(mailboxPath);
+    assert.equal(mb.total, 2, '两件均落箱');
+  });
 });
