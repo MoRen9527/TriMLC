@@ -28,3 +28,4 @@ Thumbs.db
 
 # 部署/回滚备份目录（候清，防 git 误收——CTO 2026-09-18 ④）
 dist.bak*/
+notify-mailbox.json
