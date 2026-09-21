@@ -62,7 +62,7 @@ import { injectKnowledgeContext } from '@trimetaverse/tricode';
 import {
   recordKnowledgeMetric,
   getKnowledgeMetricSnapshot,
-} from '../knowledge-injector/metrics.js';
+} from '@trimetaverse/tricode';
 import {
   beginSelfcheck,
   isSelfcheckRunning,
@@ -1610,7 +1610,7 @@ export function createTriLCApp(env: TriLCEnv) {
       // Phase 2.2 (FADE-ASSESS-003): 知识注入 — daemon 启动全量同步
       // （loadAll() 之后；源只读；幂等：content_hash 相同跳过）。同步失败不阻断启动。
       try {
-        const { syncKnowledgeFromSource } = await import('../knowledge-injector/sync.js');
+        const { syncKnowledgeFromSource } = await import('@trimetaverse/tricode');
         const knowledgeReport = syncKnowledgeFromSource({
           sourceRoot: env.tricompanySourcePath,
           projectRoot: env.projectRoot,
