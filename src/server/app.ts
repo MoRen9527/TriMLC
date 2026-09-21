@@ -14,7 +14,8 @@ import { createServer, type IncomingHttpHeaders, type Server, type ServerRespons
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { timingSafeEqual } from 'node:crypto';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import type { TriLCEnv } from '../config/env.js';
 import { resolveWeeklyPlaneRoot } from '../project/weekly-plane-root.js';
@@ -1437,6 +1438,26 @@ export function createTriLCApp(env: TriLCEnv) {
     // S7: Full push on recovery
     mirrorPusher.onReconnected();
   });
+
+  // ── LG-036 锚 2：org 层 boot 摘要（混合案裁：boot 注入摘要级辅助）──
+  if (env.notifySgBaseUrl) {
+    // 非阻塞（boot 不等摘要；仅 log 可见面）
+    void Promise.resolve()
+      .then(async () => {
+        const { collectOrgLayerSummary } = await import('@trimetaverse/tricode');
+        const candidates = [
+          join(process.cwd(), 'TriCompany-copilot-host-assets'),
+          join(resolve(process.cwd(), '..'), 'TriCompany-copilot-host-assets'),
+          join(resolve(process.cwd(), '..'), 'TriMetaverse', 'TriCompany-copilot-host-assets'),
+        ];
+        const cr = candidates.find((c) => existsSync(c));
+        if (cr) {
+          const orgSummary = collectOrgLayerSummary(cr);
+          if (orgSummary.summary) console.log(`[trilc] org 层摘要: ${orgSummary.summary}`);
+        }
+      })
+      .catch((err) => console.warn('[trilc] org 层摘要采集失败（不阻断 boot）:', err instanceof Error ? err.message : err));
+  }
 
   // ── S7: TaskMirrorPusher ──
   // Event-driven task state push to TriMC mirror endpoint.
