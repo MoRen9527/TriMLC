@@ -112,7 +112,9 @@ export function startNotifyPoller(opts: NotifyPollerOptions): NotifyPollerHandle
         const title = String(m.title ?? '');
         const body = String(m.body ?? '');
         const targetSeat = String(m.target_seat ?? opts.targetSeat ?? 'bod');
-        if (seatRoster && !seatRoster.has(targetSeat)) {
+        // FADE-010 候批双投固定路由白名单（bod/coo=治理双投位，恒可达——joint-plan §二）
+        const FIXED_ROUTE = new Set(['bod', 'coo']);
+        if (seatRoster && !seatRoster.has(targetSeat) && !FIXED_ROUTE.has(targetSeat)) {
           continue; // 名册外席位件不落箱（寻址校验；LG-012 正名制收端同族）
         }
         if (!messageId) continue;
