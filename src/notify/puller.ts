@@ -98,12 +98,15 @@ export function startNotifyPoller(opts: NotifyPollerOptions): NotifyPollerHandle
       let failed = 0;
       // 名册化寻址（2026-09-18 消费者切换）：target_seat 必须∈seats.json 席集
       // （seats 文件缺失/解析坏=回退 targetSeat 单值——行为零变化）。
+      // LG-052：名册集双名并入（seat 全名+opsName 正名——广播件 target_seat=
+      // opsName 制，与 seat 全名字段错位即 FADE-010 FIXED_ROUTE 同源问题；
+      // FIXED_ROUTE bod/coo 治理短名恒可达不动）。
       let seatRoster: Set<string> | null = null;
       try {
         const seatsPath = process.env.TRIMC_NOTIFY_SEATS_FILE;
         if (seatsPath && existsSync(seatsPath)) {
-          const seatsDoc = JSON.parse(readFileSync(seatsPath, 'utf-8')) as { seats?: Array<{ seat?: string }> };
-          seatRoster = new Set((seatsDoc.seats ?? []).map((x) => x.seat).filter((x): x is string => typeof x === 'string'));
+          const seatsDoc = JSON.parse(readFileSync(seatsPath, 'utf-8')) as { seats?: Array<{ seat?: string; opsName?: string }> };
+          seatRoster = new Set((seatsDoc.seats ?? []).flatMap((x) => [x.seat, x.opsName]).filter((x): x is string => typeof x === 'string'));
         }
       } catch { /* seats 缺失/坏=回退单值 */ }
       for (const m of messages) {

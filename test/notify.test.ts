@@ -1,7 +1,7 @@
 // ── LG-036 收端测试（TriMLC letter-store+puller；方案 acaae9fc）──
 import { describe, it, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mailboxSummary, storeLetter, markRead, mailboxPath, MAILBOX_FILE_ENV } from '../src/notify/letter-store.js';
@@ -105,5 +105,92 @@ describe('notify poller（收端外拨拉取；mock 注入）', () => {
     assert.equal(text.includes('http://sg.example'), false, 'sg 地址零落盘');
     const extra = readdirSync(dirs[dirs.length - 1]).filter((f) => !f.startsWith('notify-mailbox'));
     assert.equal(extra.length, 0, '零附加文件');
+  });
+});
+
+// ── LG-052 阶段一：名册化收端回归（13 席扩面）──
+describe('notify puller 名册回归（LG-052 双名并入）', () => {
+  const dirs: string[] = [];
+  after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+  const SEATS_FIXTURE = {
+    seats: [
+      { seat: 'full-stack-developer', opsName: 'm-fsd' },
+      { seat: 'chief-technology-officer', opsName: 'm-cto' },
+      { seat: 'ceo-chief-of-staff', opsName: 'm-cos' },
+      { seat: 'board', opsName: 'board' },
+    ],
+  };
+
+  function withSeatsFile(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'trimlc-roster-'));
+    dirs.push(dir);
+    const seatsPath = join(dir, 'seats.json');
+    writeFileSync(seatsPath, JSON.stringify(SEATS_FIXTURE), 'utf-8');
+    process.env.TRIMC_NOTIFY_SEATS_FILE = seatsPath;
+    return seatsPath;
+  }
+
+  it('opsName 正名件入册收递：target_seat=m-fsd 落箱+双 confirm', async () => {
+    const seatsPath = withSeatsFile();
+    const mailbox = join(dirs[dirs.length - 1], 'notify-mailbox.json');
+    const confirms: Array<[string, string]> = [];
+    const handle = startNotifyPoller({
+      sgBaseUrl: 'http://sg.example', sgToken: 'tok', targetSeat: 'bod', mailboxPath: mailbox,
+      onPull: async () => ({ ok: true, messages: [{ message_id: 'bc-1--m-fsd', source_seat: 'bod', target_seat: 'm-fsd', urgent: 'normal', title: '广播件', body: '全员' }] }),
+      onConfirm: async (id, to) => { confirms.push([id, to]); return true; },
+    });
+    const r = await handle.tickOnce();
+    handle.stop();
+    delete process.env.TRIMC_NOTIFY_SEATS_FILE;
+    assert.deepEqual(r, { pulled: 1, delivered: 1, failed: 0 });
+    assert.deepEqual(confirms, [['bc-1--m-fsd', 'forwarded'], ['bc-1--m-fsd', 'delivered']]);
+    assert.equal(mailboxSummary(mailbox).total, 1);
+    void seatsPath;
+  });
+
+  it('FIXED_ROUTE 一致性：bod/coo 短名恒可达（无 seats 文件时回退单值语义不破）', async () => {
+    delete process.env.TRIMC_NOTIFY_SEATS_FILE; // 无名册=回退 targetSeat 单值（现行为）
+    const mailbox = join((dirs[dirs.length - 1] ?? mkdtempSync(join(tmpdir(), 'trimlc-fr-'))), 'notify-mailbox.json');
+    dirs.push(mailbox.slice(0, mailbox.lastIndexOf('\\')) || mailbox.slice(0, mailbox.lastIndexOf('/')));
+    const handle = startNotifyPoller({
+      sgBaseUrl: 'http://sg.example', sgToken: 'tok', targetSeat: 'bod', mailboxPath: mailbox,
+      onPull: async () => ({ ok: true, messages: [{ message_id: 'fr-bod', source_seat: 'm-duty-cos', target_seat: 'bod', urgent: 'normal', title: 't', body: 'b' }] }),
+      onConfirm: async () => true,
+    });
+    const r = await handle.tickOnce();
+    handle.stop();
+    assert.equal(r.delivered, 1, 'bod 件恒可达（零变化哨兵）');
+  });
+
+  it('名册外席件不落箱：target_seat=nobody 跳过（双名并入后仍拒）', async () => {
+    withSeatsFile();
+    const mailbox = join(dirs[dirs.length - 1], 'notify-mailbox-2.json');
+    const handle = startNotifyPoller({
+      sgBaseUrl: 'http://sg.example', sgToken: 'tok', targetSeat: 'bod', mailboxPath: mailbox,
+      onPull: async () => ({ ok: true, messages: [{ message_id: 'x-1', source_seat: 'bod', target_seat: 'nobody', urgent: 'normal', title: 't', body: 'b' }] }),
+      onConfirm: async () => true,
+    });
+    const r = await handle.tickOnce();
+    handle.stop();
+    delete process.env.TRIMC_NOTIFY_SEATS_FILE;
+    assert.equal(r.pulled, 1);
+    assert.equal(r.delivered, 0, '名册外不落箱');
+    assert.equal(mailboxSummary(mailbox).total, 0);
+  });
+
+  it('幂等重拉：同广播件重出=信箱去重单件（storeLetter duplicate 面）', async () => {
+    withSeatsFile();
+    const mailbox = join(dirs[dirs.length - 1], 'notify-mailbox-3.json');
+    const msg = { message_id: 'bc-2--m-cto', source_seat: 'bod', target_seat: 'm-cto', urgent: 'normal', title: 't', body: 'b' };
+    const handle = startNotifyPoller({
+      sgBaseUrl: 'http://sg.example', sgToken: 'tok', targetSeat: 'bod', mailboxPath: mailbox,
+      onPull: async () => ({ ok: true, messages: [msg, { ...msg }] }), // 同件重出（确认前 replay）
+      onConfirm: async () => true,
+    });
+    const r = await handle.tickOnce();
+    handle.stop();
+    delete process.env.TRIMC_NOTIFY_SEATS_FILE;
+    assert.equal(r.delivered, 2, '拉取面两次到件');
+    assert.equal(mailboxSummary(mailbox).total, 1, '信箱幂等单件');
   });
 });
