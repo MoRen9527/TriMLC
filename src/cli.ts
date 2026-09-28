@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// ── TriLC CLI ──
-// Provides start/stop/status/run commands for the TriLC daemon.
+// ── TriMLC CLI ──
+// Provides start/stop/status/run commands for the TriMLC daemon.
 // CTO-008-P P.1: CLI entry point for PC desktop packaging.
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -19,7 +19,7 @@ import { defaultL2FlagPath, makeCoreIO, runCli, type ProbeReading } from '@trime
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Config ──
-const DEFAULT_PORT = 8711;
+const DEFAULT_PORT = 8713; // CTO 裁 F-1（2026-09-29 COO 转达）：M面部署位=8713（8711=TriRLC）——镜像继承 8711 错指 TriRLC daemon，准修随 registerPid 批
 const HEALTHZ_TIMEOUT_MS = 3000;
 const DEFAULT_SERVICE_NAME = 'TriLC';
 const REGRUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
@@ -27,29 +27,29 @@ const REGRUN_VALUE = 'TriLC';
 
 // ── Help ──
 function printHelp(): void {
-  console.log(`TriLC (Local Controller) — TriMetaverse Desktop Daemon
+  console.log(`TriMLC (Local Controller) — TriMetaverse Desktop Daemon
 
-Usage: trilc <command> [options]
+Usage: trimlc <command> [options]
 
 Commands:
-  start              Start daemon in background       trilc start [--port 8711]
-  stop               Stop background daemon           trilc stop
-  restart            Restart daemon (stop → start)    trilc restart [--port 8711]
-  status             Show daemon status               trilc status [--port 8711]
-  run                Run daemon in foreground         trilc run [--port 8711]
-  chat               Start TUI chat (auto-starts daemon) trilc chat [--port 8711] [--agent &lt;id&gt;] [--resume &lt;id&gt;] [--permission-mode &lt;mode&gt;]
-  list-sessions      List all saved sessions            trilc list-sessions [--port 8711]
-  session compact    Compact a session's messages         trilc session compact <id>
-  install-service    Register as Windows Service       trilc install-service [--name TriLC] [--displayName "..."]
-  uninstall-service  Unregister Windows Service        trilc uninstall-service [--name TriLC]
-  install-regrun     Register to Registry Run (no-admin) trilc install-regrun
-  uninstall-regrun   Remove from Registry Run           trilc uninstall-regrun
-  daemon             OS-level daemon management         trilc daemon <install|uninstall|stage|status>
-  cron               Cron job management                trilc cron <add|list|update|remove|run|log|status>
-  config             TriModel config page family (LG-058) trilc config <pull|show|verify|cache show|cache clear>
-  model              TriModel recovery ladder family    trilc model <...>（现役保留，§5.1 并列）
-  mcp                MCP server management               trilc mcp <add|remove|list|status>
-  watchdog           Start watchdog supervisor process   trilc watchdog [--port 8711] [--data-dir <path>]
+  start              Start daemon in background       trimlc start [--port 8713]
+  stop               Stop background daemon           trimlc stop
+  restart            Restart daemon (stop → start)    trimlc restart [--port 8713]
+  status             Show daemon status               trimlc status [--port 8713]
+  run                Run daemon in foreground         trimlc run [--port 8713]
+  chat               Start TUI chat (auto-starts daemon) trimlc chat [--port 8713] [--agent &lt;id&gt;] [--resume &lt;id&gt;] [--permission-mode &lt;mode&gt;]
+  list-sessions      List all saved sessions            trimlc list-sessions [--port 8713]
+  session compact    Compact a session's messages         trimlc session compact <id>
+  install-service    Register as Windows Service       trimlc install-service [--name TriLC] [--displayName "..."]
+  uninstall-service  Unregister Windows Service        trimlc uninstall-service [--name TriLC]
+  install-regrun     Register to Registry Run (no-admin) trimlc install-regrun
+  uninstall-regrun   Remove from Registry Run           trimlc uninstall-regrun
+  daemon             OS-level daemon management         trimlc daemon <install|uninstall|stage|status>
+  cron               Cron job management                trimlc cron <add|list|update|remove|run|log|status>
+  config             TriModel config page family (LG-058) trimlc config <pull|show|verify|cache show|cache clear>
+  model              TriModel recovery ladder family    trimlc model <...>（现役保留，§5.1 并列）
+  mcp                MCP server management               trimlc mcp <add|remove|list|status>
+  watchdog           Start watchdog supervisor process   trimlc watchdog [--port 8713] [--data-dir <path>]
 
 Options:
   --port <n>          Port for HTTP server (default: ${DEFAULT_PORT})
