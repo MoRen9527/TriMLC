@@ -91,7 +91,7 @@ describe('LG-058 N3 config-cache 泛化', () => {
     assert.equal(keys.openai, undefined); // disabled 不进 keys
   });
 
-  it('FACE_ID 默认 rlc（TriMLC 仓域面身份）；归因码三枚举冻结', () => {
+  it('FACE_ID 默认 mlc（TriMLC 域面身份）；归因码三枚举冻结', () => {
     assert.equal(FACE_ID, 'mlc');
     assert.deepEqual([...PULL_ATTRIBUTION_CODES], ['pull_denied', 'decrypt_failed', 'apply_rejected']);
   });
@@ -198,6 +198,51 @@ describe('LG-058 N3 config-cache 泛化', () => {
         assert.equal(cache.keys.deepseek?.api_key, 'sk-existing');
         await new Promise((r) => setTimeout(r, 20));
         assert.equal(statusCalls.length, 0, 'admin 缺席=回写跳过');
+      } finally {
+        stopKeyCache();
+        restoreFetch();
+      }
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('模型维中继（L32 评估序投影）：card_present:false 载荷带 default_model → keys 保留仅刷模型', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'trimlc-kc-n3-'));
+    const restore = pinSandboxEnv();
+    try {
+      // 预置 tier2 cache（含凭据）
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'config-cache.json'), JSON.stringify({
+        keys: { deepseek: { api_key: 'sk-existing' } },
+        defaultModel: 'deepseek-v4-pro',
+        refreshIntervalS: 900,
+        fetchedAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+      }));
+      const updated: Array<{ defaultModel?: string }> = [];
+      const restoreFetch = withMockFetch(async (input, init) => {
+        const url = String(input);
+        if (url.includes('/status')) return new Response('{}', { status: 200 });
+        void init;
+        return new Response(JSON.stringify({
+          object: 'config.card-pull', face: 'mlc', card_present: false,
+          default_model: 'GLM-5.3', default_model_source: 'policy',
+        }), { status: 200 });
+      });
+      try {
+        stopKeyCache();
+        const { onKeyCacheUpdated } = await import('../src/config/key-cache.js');
+        onKeyCacheUpdated((cache) => { updated.push({ defaultModel: cache.defaultModel }); });
+        await initKeyCache('http://127.0.0.1:3333', dir, 'tok');
+        const cache = getKeyCache();
+        assert.ok(cache);
+        assert.equal(cache.defaultModel, 'GLM-5.3', 'default_model 中继生效（anchor③ 语义）');
+        assert.equal(cache.keys.deepseek?.api_key, 'sk-existing', '凭据维保留 tier2 现值');
+        const onDisk = JSON.parse(readFileSync(join(dir, 'config-cache.json'), 'utf-8'));
+        assert.equal(onDisk.defaultModel, 'GLM-5.3');
+        assert.equal(onDisk.keys.deepseek?.api_key, 'sk-existing');
       } finally {
         stopKeyCache();
         restoreFetch();
