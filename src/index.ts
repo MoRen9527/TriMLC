@@ -142,7 +142,7 @@ async function main(): Promise<void> {
   // The CLI no longer writes the PID file on spawn — this is the single
   // source of truth for "where is the daemon" (works for `trilc run` too).
   try {
-    await registerPid();
+    await registerPid(app.port); // CTO 候修裁①（e24b17cc）：补 port 参对齐 TriRLC L141 正形——pid 文件按 port 分位
   } catch (err) {
     console.warn('[trilc] PID registration failed (continue):', (err as Error).message);
   }
@@ -158,7 +158,7 @@ async function main(): Promise<void> {
     try {
       await app.stop();
       await daemon.stop();
-      await unregisterPid();
+      await unregisterPid(app.port); // 同裁定①：port 参对表（与 registerPid 同键位）
       console.log('[trilc] shutdown complete');
     } catch (err) {
       console.error('[trilc] shutdown error:', err instanceof Error ? err.message : String(err));
