@@ -225,15 +225,31 @@ export function createCronStore(dbPath: string) {
       : input.schedule.expr;
     const scheduleTz = scheduleKind === "cron" ? input.schedule.tz ?? null : null;
 
+    // F-3 fix: compute the first trigger point at INSERT time — same semantics as the
+    // updateJob PATCH path (which recomputes nextRunAt whenever patch.schedule is set).
+    // Before this fix an API-inserted job had next_run_at = NULL and was permanently
+    // invisible to the timer (armTimer/onTimerTick/runMissedJobs all filter on
+    // nextRunAt truthiness), staying unscheduled until a manual force-run happened to
+    // write the value back via the post-run updateJobRun path.
+    let nextRunAt: string | null = null;
+    try {
+      const sched = parseCronSchedule(input.schedule);
+      const nextMs = sched.nextRunMs();
+      nextRunAt = nextMs ? new Date(nextMs).toISOString() : null;
+    } catch {
+      // Unparseable schedule: keep NULL (fail-open, same semantics as updateJob).
+      nextRunAt = null;
+    }
+
     const stmt = db.prepare(`
       INSERT INTO cron_jobs (id, name, schedule_kind, schedule_value, schedule_tz,
-        system_prompt, command, role_id, enabled, state, created_at, updated_at, run_count, error_count)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?, 0, 0)
+        system_prompt, command, role_id, enabled, state, created_at, updated_at, next_run_at, run_count, error_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, 0, 0)
     `);
     stmt.run(
       id, input.name, scheduleKind, scheduleValue, scheduleTz,
       input.systemPrompt, input.command ?? null, input.roleId ?? null,
-      input.enabled ? 1 : 0, now, now,
+      input.enabled ? 1 : 0, now, now, nextRunAt,
     );
 
     const row = db.prepare("SELECT * FROM cron_jobs WHERE id = ?").get(id) as unknown as CronJobRow;
