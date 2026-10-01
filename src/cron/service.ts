@@ -4,6 +4,7 @@
 
 import type { CronJob, CronJobCreate, CronJobPatch, ExecutionLogEntry } from "./types.js";
 import { createCronStore } from "./store.js";
+import { parseCronSchedule } from "./scheduler.js";
 import {
   createCronTimerState,
   armTimer,
@@ -99,6 +100,22 @@ export function createCronService(deps: CronServiceDeps): CronService {
 
       // Run missed jobs from before restart
       await runMissedJobs(state, timerDeps);
+
+      // F-3 Part B: self-heal legacy rows whose next_run_at is NULL. The INSERT
+      // fix (0fd9c6f) only covers newly created jobs; rows created before the
+      // fix stay permanently unscheduled until backfilled here. Write path =
+      // updateJobRun, same channel the post-run re-schedule uses (timer.ts).
+      for (const j of store.listJobs()) {
+        if (j.enabled && !j.nextRunAt) {
+          try {
+            const { nextRunMs } = parseCronSchedule(j.schedule);
+            const v = nextRunMs();
+            if (v != null) {
+              store.updateJobRun(j.id, { nextRunAt: new Date(v).toISOString() });
+            }
+          } catch { /* unparseable schedule: leave NULL (fail-open) */ }
+        }
+      }
 
       // Arm the global timer
       armTimer(state, timerDeps);
