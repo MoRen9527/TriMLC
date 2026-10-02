@@ -382,6 +382,10 @@ export function createCronStore(dbPath: string) {
     const row = db.prepare("SELECT * FROM cron_jobs WHERE id = ?").get(id) as unknown as CronJobRow;
     const idx = jobs.findIndex((j) => j.id === id);
     if (idx >= 0) jobs[idx] = rowToJob(row);
+    // Maintenance ④ (2026-10-03): keep the JSON backup in sync — addJob/updateJob/
+    // removeJob all call saveCronStore(); updateJobRun (9 call sites in timer.ts =
+    // every post-run write) was the only mutation path that left <dbPath>.json stale.
+    saveCronStore();
   }
 
   // ── Execution Log (Phase 3) ──
