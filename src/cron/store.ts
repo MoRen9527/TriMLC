@@ -388,6 +388,37 @@ export function createCronStore(dbPath: string) {
     saveCronStore();
   }
 
+  // ── Boot recovery sweep（LG-064 §八裁决② TriMLC 移植，2026-10-06）──
+
+  /**
+   * 上一 boot 崩溃/强停残留的 running 态归位 idle（engine start 时调用，先于
+   * runMissedJobs）。残留 running 会使补跑洪峰竞态后引擎互斥永不重触发
+   * （l2-scan 永卡族实证形态：nextRun 冻结+不自愈；l2-scan PATCH 破案另证
+   * state 非 API 可写面——CronJobPatch 无 state 字段，归位只此 boot 通道）。
+   * TriRLC 同构正形 03b3220 移植；CTO 排程=段2 部署窗前置项（卷 851382a9）。
+   */
+  function resetStaleRunningJobs(): number {
+    const now = new Date().toISOString();
+    const result = db
+      .prepare("UPDATE cron_jobs SET state = 'idle', updated_at = ? WHERE state = 'running'")
+      .run(now);
+    const changed = Number(result.changes ?? 0);
+    if (changed > 0) {
+      // 逐行刷新内存（不能用 loadAll：其 mtime 守卫在 WAL 模式下看不到主 db
+      // 文件变化 → 缓存陈旧 → 判定面仍读 running；TriRLC 段1 白盒同签名实证）。
+      // 对齐 updateJobRun 刷新形态（含 saveCronStore，Maintenance ④ 同步 json 备份）。
+      for (let i = 0; i < jobs.length; i++) {
+        if (jobs[i].state === 'running') {
+          const row = db.prepare("SELECT * FROM cron_jobs WHERE id = ?").get(jobs[i].id) as unknown as CronJobRow;
+          jobs[i] = rowToJob(row);
+        }
+      }
+      saveCronStore();
+      console.log(`${LOG_PREFIX} boot recovery: reset ${changed} stale running job(s) to idle`);
+    }
+    return changed;
+  }
+
   // ── Execution Log (Phase 3) ──
 
   function addExecutionLog(
@@ -438,6 +469,7 @@ export function createCronStore(dbPath: string) {
     listJobs,
     updateJob,
     updateJobRun,
+    resetStaleRunningJobs,
     addExecutionLog,
     getExecutionLogs,
     getRecentExecutionLogs,

@@ -98,6 +98,12 @@ export function createCronService(deps: CronServiceDeps): CronService {
       if (state.started) return;
       state.started = true;
 
+      // Boot recovery sweep（LG-064 §八裁决② TriMLC 移植，2026-10-06）：上一 boot
+      // 崩溃/强停残留的 running 态先归位 idle，必须先于 runMissedJobs——残留
+      // running 会让补跑洪峰过滤器（timer.ts runMissedJobs 的 state==="running"
+      // 剔除）跳过该 job，且引擎互斥永不重触发 = l2-scan 永卡族。
+      store.resetStaleRunningJobs();
+
       // Run missed jobs from before restart
       await runMissedJobs(state, timerDeps);
 

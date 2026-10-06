@@ -30,6 +30,8 @@ export interface CronStoreLike {
   listJobs(): CronJob[];
   updateJob(id: string, patch: Record<string, unknown>): CronJob | null;
   updateJobRun(id: string, updates: Record<string, unknown>): void;
+  /** Boot recovery sweep（LG-064 §八 TriMLC 移植）：running 残留归位 idle，返回归位条数。 */
+  resetStaleRunningJobs(): number;
   addExecutionLog(jobId: string, status: string, startedAt: string, durationMs: number, errorMessage?: string): unknown;
   getExecutionLogs(jobId: string, limit?: number): unknown[];
   saveCronStore(): void;
