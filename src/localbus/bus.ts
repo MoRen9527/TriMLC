@@ -24,6 +24,9 @@ export type LocalBusEvent =
   | { type: 'cron:error'; error: string }
   | { type: 'cron:degraded'; consecutiveFailures: number }
   | { type: 'cron:recovered' }
+  // 根治包（d38a3eae）：运行期 stale-running 归位观察面（degraded 不耦合，
+  // CTO 裁③——告警走本事件独立订阅）。
+  | { type: 'cron:stale_reclaimed'; count: number }
   // ── Init chain / selfcheck events（I1: init-collab-i1-statemachine）──
   // init:chain-changed 的 eventSeq 与链路状态文件同帧（i1-1 §三）。
   | { type: 'init:chain-changed'; chainState: string; from: string; to: string; eventSeq: number; sourceEntry: string | null }

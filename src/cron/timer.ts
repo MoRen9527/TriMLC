@@ -20,6 +20,9 @@ const DEFAULT_MISSED_JOB_STAGGER_MS = 5_000;
 const DEFAULT_MAX_MISSED_JOBS_PER_RESTART = 5;
 const DEFAULT_JOB_TIMEOUT_MS = 10 * 60_000;
 const CONSECUTIVE_FAILURE_DEGRADED_THRESHOLD = 3;
+// 根治包（d38a3eae）：stale 判定缓冲窗——合法 run（race 10min 必 settle）与
+// sweep 判 stale 零重叠的余量；可经 TRIMLC_CRON_RECLAIM_GRACE_MS 调。
+const DEFAULT_RECLAIM_GRACE_MS = 120_000;
 
 // ── Internal types ──
 
@@ -32,6 +35,8 @@ export interface CronStoreLike {
   updateJobRun(id: string, updates: Record<string, unknown>): void;
   /** Boot recovery sweep（LG-064 §八 TriMLC 移植）：running 残留归位 idle，返回归位条数。 */
   resetStaleRunningJobs(): number;
+  /** 运行期 stale-running 对账（根治包 d38a3eae）：归位 updated_at<=cutoff 的 running 行（idle+执行账补记），返回归位 id 列表。 */
+  reclaimStaleRunningJobs(cutoffIso: string): string[];
   addExecutionLog(jobId: string, status: string, startedAt: string, durationMs: number, errorMessage?: string): unknown;
   getExecutionLogs(jobId: string, limit?: number): unknown[];
   saveCronStore(): void;
@@ -120,12 +125,64 @@ export function stopTimer(state: CronTimerState): void {
   if (state.armTimerId) { clearTimeout(state.armTimerId); state.armTimerId = null; }
 }
 
+// ── Runtime stale-running reclaim sweep（根治包）──
+
+/**
+ * 运行期 stale-running 对账 sweep（CTO APPROVE d38a3eae；onTimerTick 锁内最前
+ * 挂载、dueJobs 过滤前）：armTimer ≤60s 节拍天然驱动，零新 timer——stale 行
+ * nextRunAt 冻结使 timer 持续有臂 → tick 持续到岗 → sweep 持续巡检，闭环成立；
+ * 与 tick/enqueueRun 同锁串行 = 零新增并发面。
+ *
+ * 判据（事实为主红线）：stale ⇔ state==='running' AND (now−updatedAt) >
+ * DEFAULT_JOB_TIMEOUT_MS(10min)+RECLAIM_GRACE_MS(缺省120s)。合法 run（race
+ * 10min 必 settle）与 sweep 判 stale 零重叠。updatedAt=行面突变事实代理启动
+ * 时刻（settle 前行面无第二写）；API PATCH 刷新 updatedAt → sweep 顺延 =
+ * 设计行为非 bug（CTO 附条件①：保守向只顺延不误杀，测试锚案⑥钉死）。
+ * nextRun 滚动禁入判据（TriMMC executor 家族红线）。
+ *
+ * 处置三件：归位+执行账补记（store.reclaimStaleRunningJobs）+此处逐 id 重排
+ * nextRunAt——按 job 自身 schedule 下一未来槽位（Math.max(槽位,
+ * now+MIN_REFIRE_GAP)），不立即补跑断热循环（互备非循环红线对表：every 类
+ * 下一槽=now+everyMs，cron 类=下一定位点，均>0 延迟）。
+ *
+ * degraded 不耦合（CTO 裁③）：reclaim 记 error_count（账面）但不动
+ * consecutiveFailures/degraded——reclaim 是历史 run 的迟到记账，非当前调度
+ * 失败；告警经 cron:stale_reclaimed 事件独立订阅，不入 degraded 时间域。
+ *
+ * 可测导出（shouldRunJob 同族先例）。降级参数：TRIMLC_CRON_STALE_RECLAIM=0
+ * 整体禁用（回滚通道，缺省开）；TRIMLC_CRON_RECLAIM_GRACE_MS 缓冲窗可调。
+ */
+export function sweepStaleRunning(deps: CronTimerDeps): void {
+  if (process.env.TRIMLC_CRON_STALE_RECLAIM === "0") return;
+  const now = Date.now();
+  const graceRaw = Number(process.env.TRIMLC_CRON_RECLAIM_GRACE_MS);
+  const graceMs = Number.isFinite(graceRaw) && graceRaw > 0 ? graceRaw : DEFAULT_RECLAIM_GRACE_MS;
+  const cutoff = new Date(now - DEFAULT_JOB_TIMEOUT_MS - graceMs).toISOString();
+  const reclaimed = deps.store.reclaimStaleRunningJobs(cutoff);
+  if (reclaimed.length === 0) return;
+  for (const id of reclaimed) {
+    const refreshed = deps.store.getJob(id);
+    if (refreshed?.enabled) {
+      const { nextRunMs } = parseCronSchedule(refreshed.schedule);
+      const next = nextRunMs();
+      if (next !== null) {
+        deps.store.updateJobRun(id, {
+          nextRunAt: new Date(Math.max(next, now + MIN_REFIRE_GAP_MS)).toISOString(),
+        });
+      }
+    }
+  }
+  console.warn(`${LOG_PREFIX} stale reclaim (runtime sweep): reset ${reclaimed.length} stale running job(s) past ${cutoff}`);
+  publish({ type: "cron:stale_reclaimed", count: reclaimed.length });
+}
+
 // ── Timer tick ──
 
 async function onTimerTick(state: CronTimerState, deps: CronTimerDeps): Promise<void> {
   if (state.locked) { armTimer(state, deps); return; }
 
   await withLock(state, async () => {
+    sweepStaleRunning(deps); // 根治包：运行期 stale-running 对账（d38a3eae），先于 dueJobs 过滤
     const jobs = deps.store.listJobs();
     const now = Date.now();
     const dueJobs = jobs.filter((j) => {

@@ -419,6 +419,70 @@ export function createCronStore(dbPath: string) {
     return changed;
   }
 
+  // ── Runtime stale-running reclaim sweep（根治包：run 永卡 running 无自愈，
+  // CTO APPROVE d38a3eae，2026-10-07）──
+
+  /**
+   * 运行期 stale-running 对账（timer tick 锁内驱动；boot sweep 之外的第二道）：
+   * settle 断链（P1 settle 写失败穿 withLock / P2 补跑洪峰半亡态）残留的
+   * running 行永卡——互斥与 tick 过滤双重封死复活通道，boot sweep 只封重启
+   * 入口，daemon 长活期间零自愈。本 sweep 把 updated_at 早于 cutoff 的 running
+   * 行归位 idle + 执行账补记，nextRunAt 重排由 timer 层逐 id 接力（本层不管
+   * schedule 语义）。
+   *
+   * 判据红线（CTO 附条件① 语义边界钉注）：updated_at 是「行面突变事实」代理
+   * 启动时刻——executeJobScheduled 先写 state=running（updateJobRun 无条件盖
+   * updated_at），settle 前行面无第二写；故 API PATCH（updateJob 改名/排程）
+   * 刷新 updated_at 使本 sweep 顺延一轮 = 设计行为非 bug（保守向：只顺延不误
+   * 杀，CTO 裁①采 updatedAt 代理案的定谳理由）。nextRun 滚动禁入判据
+   * （TriMMC executor 家族红线）。
+   *
+   * 返回归位的 job id 列表（timer 层逐 id 重排 nextRunAt；count=length）。
+   */
+  function reclaimStaleRunningJobs(cutoffIso: string): string[] {
+    const staleRows = db
+      .prepare("SELECT id, updated_at FROM cron_jobs WHERE state = 'running' AND updated_at <= ?")
+      .all(cutoffIso) as unknown as Array<{ id: string; updated_at: string }>;
+    if (staleRows.length === 0) return [];
+
+    // 执行账补记（boot sweep 不补账的缺口本 sweep 封住）：startedAt=归位前行面
+    // 的 updated_at（启动时刻代理）；durationMs 记 0 + errorMessage 注明未知——
+    // addExecutionLog 形参为 number（零 types 变更写入面），真实时长已不可考。
+    const now = new Date().toISOString();
+    for (const row of staleRows) {
+      addExecutionLog(
+        row.id,
+        "error",
+        row.updated_at,
+        0,
+        "stale running reclaimed (runtime sweep): exceeded timeout+grace (duration unknown)",
+      );
+    }
+
+    const result = db
+      .prepare(
+        "UPDATE cron_jobs SET state = 'idle', last_run_status = 'error', " +
+        "error_count = error_count + 1, updated_at = ? " +
+        "WHERE state = 'running' AND updated_at <= ?",
+      )
+      .run(now, cutoffIso);
+    const changed = Number(result.changes ?? 0);
+
+    if (changed > 0) {
+      // 逐行刷新内存（同 boot sweep：禁 loadAll——其 mtime 守卫在 WAL 模式下
+      // 看不到主 db 文件变化 → 缓存陈旧；对齐 updateJobRun 刷新形态，含
+      // saveCronStore，Maintenance ④ json 备份同步）。
+      for (let i = 0; i < jobs.length; i++) {
+        if (jobs[i].state === 'running') {
+          const row = db.prepare("SELECT * FROM cron_jobs WHERE id = ?").get(jobs[i].id) as unknown as CronJobRow;
+          jobs[i] = rowToJob(row);
+        }
+      }
+      saveCronStore();
+    }
+    return staleRows.map((r) => r.id);
+  }
+
   // ── Execution Log (Phase 3) ──
 
   function addExecutionLog(
@@ -470,6 +534,7 @@ export function createCronStore(dbPath: string) {
     updateJob,
     updateJobRun,
     resetStaleRunningJobs,
+    reclaimStaleRunningJobs,
     addExecutionLog,
     getExecutionLogs,
     getRecentExecutionLogs,
