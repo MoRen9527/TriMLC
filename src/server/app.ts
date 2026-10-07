@@ -48,6 +48,7 @@ import {
 } from '../config/key-cache.js';
 import { TaskMirrorPusher } from '../mirror/pusher.js';
 import { startNotifyPoller } from '../notify/puller.js';
+import { startPowerMonitor, type PowerMonitorHandle } from '../power-monitor.js';
 import type { MirrorTaskSnapshot } from '../mirror/types.js';
 import {
   beginInteractiveSession,
@@ -1389,6 +1390,18 @@ export function createTriLCApp(env: TriLCEnv) {
     storePath: `${env.dataDir}/sessions.db`,
   });
 
+  // ── LG-069 本机电量双阈值闸（CEO 2026-10-07 23:52 令）──
+  // 常驻语义态（进程内 60s interval）不进 cron store——零 F-3 族坑零白名单面。
+  // handle 声明先于 cron 引擎：硬闸谓词晚绑定引用快照（未启动/无电池/未初读
+  // 时 gate='none' 恒放行=零行为变化）。monitor 实启挂 start()、停挂 stop()
+  // （daemon 生命周期对齐；server 未起不 spawn 检测进程）。
+  let powerMonitor: PowerMonitorHandle | null = null;
+  const isPowerGateHard = (): boolean => (powerMonitor?.snapshot().gate ?? 'none') === 'hard';
+  const powerHealthz = (): { percent: number | null; acOnline: boolean | null; gate: string; batteryPresent: boolean } | null => {
+    const p = powerMonitor?.snapshot();
+    return p ? { percent: p.percent, acOnline: p.acOnline, gate: p.gate, batteryPresent: p.batteryPresent } : null;
+  };
+
   // ── Minimal Cron Engine ──
   const cronEngine: MinimalCronEngine = createMinimalCronEngine({
     dataDir: env.dataDir,
@@ -1413,6 +1426,9 @@ export function createTriLCApp(env: TriLCEnv) {
         detail: 'cron_owner_not_active',
       });
     },
+    // LG-069 电量硬闸：gate==='hard' 时暂停自动派发新 job（在跑不中断；
+    // 手动 runJobNow 面不经此闸=人决面保持开放，如实边界见方案卷）。
+    shouldDispatchNewJobs: () => !isPowerGateHard(),
   });
   const taskStreams = new Map<string, TaskStreamEntry>();
   let connectionId = '';
@@ -1710,6 +1726,7 @@ export function createTriLCApp(env: TriLCEnv) {
             uptime,
             activeTasks,
             queueSize: eventQueue.getQueueSize(),
+            power: powerHealthz(), // LG-069 电量闸一行投影（gate/batteryPresent/percent/acOnline；未启动=null）
             version: env.version,
             daemon: {
               mode: process.platform === 'win32' ? 'schtasks' : process.platform === 'darwin' ? 'launchd' : 'systemd',
@@ -1812,6 +1829,19 @@ export function createTriLCApp(env: TriLCEnv) {
           console.log(`[trilc:keys] config cache cleared via internal API (hadCache=${result.hadCache}, removed=${result.removedFiles.length})`);
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ object: 'config.cache-cleared', ...result }));
+          return;
+        }
+
+        // ── GET /internal/v1/power（LG-069 电量闸只读面；X-Internal-Token 门内同族）──
+        // 载荷=检测快照（percent/acOnline/gate/batteryPresent + 失效面读数）。
+        // 未启动=gate none 全 null（monitor 挂 start() 生命周期）。
+        if (req.url === '/internal/v1/power' && req.method === 'GET') {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(
+            powerMonitor
+              ? { object: 'power', ...powerMonitor.snapshot() }
+              : { object: 'power', percent: null, acOnline: null, gate: 'none', batteryPresent: true, readFailures: 0, lastReadAt: null },
+          ));
           return;
         }
 
@@ -4521,6 +4551,35 @@ export function createTriLCApp(env: TriLCEnv) {
         console.warn("[trilc] cron engine start failed:", (err as Error).message);
       });
 
+      // ── LG-069 电量双阈值闸启动（60s 进程内 interval；首读立即校准）──
+      // 通知出向接 sg /internal/v1/notify 现役链（TRIMC_NOTIFY_SG_URL 未配置=
+      // 通知降级仅日志，闸逻辑照跑——闸是本地面，通知是出向面，fail-open 如实）。
+      const powerNotifyPost = env.notifySgBaseUrl && env.notifySgToken
+        ? (payload: Record<string, unknown>): Promise<boolean> =>
+            fetch(`${env.notifySgBaseUrl!.replace(/\/$/, '')}/internal/v1/notify`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', 'x-internal-token': env.notifySgToken! },
+              body: JSON.stringify(payload),
+            }).then((r) => r.ok).catch(() => false)
+        : null;
+      powerMonitor = startPowerMonitor({
+        notify: (p) => {
+          if (!powerNotifyPost) return;
+          for (const seat of p.seats) {
+            void powerNotifyPost({
+              source_seat: 'power-gate',
+              target_daemon: 'trimmc',
+              target_seat: seat,
+              urgent: p.level,
+              title: p.title,
+              body: p.body,
+            });
+          }
+        },
+        log: (line) => console.log(`[trilc:power] ${line}`),
+      });
+      console.log("[trilc:power] power gate monitor started (60s interval, LG-069)");
+
       // ── ACT2: Update check loop ──
       updateCheckLoop = startUpdateCheckLoop({
         repo: process.env.TRILC_GITHUB_REPO ?? 'MoRen9527/TriLC',
@@ -4560,6 +4619,8 @@ export function createTriLCApp(env: TriLCEnv) {
 
     async stop(): Promise<void> {
       cronEngine.stop();
+      powerMonitor?.stop();
+      powerMonitor = null;
       sessionReaper.stop();
       heartbeatRunner.stop();
       mirrorPusher.stop();

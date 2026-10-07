@@ -57,6 +57,11 @@ export interface CronTimerDeps {
   isRoleActive?: (roleId: string) => Promise<boolean>;
   /** FADE-ASSESS-003 小乔指标：roleId 门禁拒绝回调（daemon 注入埋点；缺省静默）。 */
   onRoleGateDenied?: (roleId: string) => void;
+  /** LG-069 电量硬闸（CEO 2026-10-07 23:52 令）：返回 false=暂停派发新 job。
+   *  单点挂 executeJobScheduled 入口（tick/补跑两表面全汇此函数）；在跑 job 与
+   *  executor 循环零触碰。缺省/未注入=无闸（零行为变化）。手动 runJobNow 面
+   *  不经此闸（人决面保持开放，见 app.ts 接线注）。 */
+  shouldDispatchNewJobs?: () => boolean;
 }
 
 export interface CronTimerState {
@@ -204,6 +209,28 @@ async function onTimerTick(state: CronTimerState, deps: CronTimerDeps): Promise<
 
 async function executeJobScheduled(state: CronTimerState, deps: CronTimerDeps, job: CronJob): Promise<void> {
   if (!job.enabled) return;
+  // ── LG-069 电量硬闸（<20% 停新派发）──单点闸：onTimerTick（tick due 表）与
+  // runMissedJobs（启动补跑表）全汇本函数，一处闸全封自动派发面。due 次记
+  // skipped（角色门禁 FADE-ASSESS-005 同款账面：incrementRun 不 incrementError），
+  // 照常推进 nextRunAt——防 due 行滞留触发 0 延迟重臂忙循环；consecutiveFailures
+  // 不计（闸停非 job 失败，防长闸期误引 degraded 污染守望面）。在跑 job 零触碰。
+  if (deps.shouldDispatchNewJobs && !deps.shouldDispatchNewJobs()) {
+    const nowIso = new Date().toISOString();
+    deps.store.addExecutionLog(job.id, "skipped", nowIso, 0, "power-gate:hard (LG-069) dispatch paused");
+    deps.store.updateJobRun(job.id, {
+      lastRunAt: nowIso, lastRunStatus: "skipped", state: "idle", incrementRun: true,
+    });
+    const gatedRefreshed = deps.store.getJob(job.id);
+    if (gatedRefreshed && gatedRefreshed.enabled) {
+      const gatedNext = parseCronSchedule(gatedRefreshed.schedule).nextRunMs();
+      if (gatedNext !== null) {
+        deps.store.updateJobRun(gatedRefreshed.id, {
+          nextRunAt: new Date(Math.max(gatedNext, Date.now() + MIN_REFIRE_GAP_MS)).toISOString(),
+        });
+      }
+    }
+    return;
+  }
   deps.store.updateJobRun(job.id, { state: "running" });
   deps.onJobTrigger?.(job);
 
