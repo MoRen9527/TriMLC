@@ -18,6 +18,8 @@ import {
   stepPowerGate,
   zoneOf,
   startPowerMonitor,
+  parsePowerOutput,
+  POWER_NOTIFY_FAILURE_ALARM_THRESHOLD,
   type PowerGateState,
   type PowerReading,
 } from '../src/power-monitor.js';
@@ -28,7 +30,9 @@ const CFG = DEFAULT_POWER_GATE_CONFIG;
 const NONE: PowerGateState = { gate: 'none', pendingZone: null, pendingCount: 0, batteryPresent: true };
 
 function reading(percent: number | null, acOnline: boolean, batteryPresent = true): PowerReading {
-  return { percent, acOnline, batteryPresent };
+  // 修复批①后 percentRaw/percentCim 必填；状态机测试只关心判定输入 percent，
+  // 双读可见面默认回填=percent 同值（无分叉假设），分叉态由 D 族显式构造。
+  return { percent, percentRaw: percent, percentCim: percent, acOnline, batteryPresent };
 }
 
 function step2(prev: PowerGateState, r: PowerReading) {
@@ -141,7 +145,7 @@ describe('LG-069 startPowerMonitor 检测失败告警', () => {
       intervalMs: 5,
     });
     try {
-      await new Promise((r) => setTimeout(r, 60));
+      await new Promise((r) => setTimeout(r, 250)); // 全量负载下 60ms 窗 tick 不足（flake 实证），加宽
       const firstStreak = alerts.filter((a) => a.level === 'urgent');
       assert.ok(firstStreak.length >= 1, '失效段至少一次告警');
       assert.equal(handle.snapshot().readFailures >= 3, true);
@@ -156,6 +160,133 @@ describe('LG-069 startPowerMonitor 检测失败告警', () => {
       const before = alerts.length;
       await new Promise((r) => setTimeout(r, 60));
       assert.ok(alerts.length > before, '新失效段重新告警（streak 制非全局一次）');
+    } finally {
+      handle.stop();
+    }
+  });
+});
+
+// ── D. 双读保守 min（修复批①：同源不同径，min=设计正则）──
+
+describe('修复批① 双读保守 min', () => {
+  it('parsePowerOutput：双值齐 → percent=min(raw,cim)，raw/cim 可见化', () => {
+    const r = parsePowerOutput('AC=0;FLAG=2;PCT=41;CIM=40');
+    assert.equal(r.percent, 40, '保守取低');
+    assert.equal(r.percentRaw, 41);
+    assert.equal(r.percentCim, 40);
+    assert.equal(r.acOnline, false);
+    assert.equal(r.batteryPresent, true);
+  });
+
+  it('parsePowerOutput：CIM 高于 P/Invoke（充电态反向差）→ 仍取低', () => {
+    const r = parsePowerOutput('AC=1;FLAG=2;PCT=18;CIM=19');
+    assert.equal(r.percent, 18);
+    assert.equal(r.percentRaw, 18);
+    assert.equal(r.percentCim, 19);
+  });
+
+  it('parsePowerOutput：CIM=NA 单边失败 → 退 P/Invoke 单读（不判读失败）', () => {
+    const r = parsePowerOutput('AC=0;FLAG=2;PCT=37;CIM=NA');
+    assert.equal(r.percent, 37);
+    assert.equal(r.percentRaw, 37);
+    assert.equal(r.percentCim, null, 'CIM 单边失败=null（healthz 可见化）');
+    assert.equal(r.batteryPresent, true);
+  });
+
+  it('parsePowerOutput：无电池形态（FLAG=128/PCT=255）→ 三值全 null', () => {
+    const a = parsePowerOutput('AC=1;FLAG=128;PCT=128;CIM=NA');
+    assert.equal(a.batteryPresent, false);
+    assert.equal(a.percent, null);
+    assert.equal(a.percentRaw, null);
+    assert.equal(a.percentCim, null);
+    const b = parsePowerOutput('AC=1;FLAG=2;PCT=255;CIM=NA');
+    assert.equal(b.batteryPresent, false);
+  });
+
+  it('parsePowerOutput：无电池但 CIM 有值 → percent 仍 null（batteryPresent 主判）', () => {
+    const r = parsePowerOutput('AC=1;FLAG=128;PCT=128;CIM=42');
+    assert.equal(r.batteryPresent, false);
+    assert.equal(r.percent, null, '无电池时 min 链不产出读数');
+    assert.equal(r.percentCim, 42, 'CIM 面如实可见（观测非判定）');
+  });
+
+  it('parsePowerOutput：不可解析输出 → throw（read 失败链入口）', () => {
+    assert.throws(() => parsePowerOutput('garbage output'));
+  });
+
+  it('状态机端到端：mock 分叉读数 → 闸判定吃 min 值（raw 21/cim 19 → hard）', async () => {
+    const handle = startPowerMonitor({
+      readPower: async () => ({
+        percent: 19, percentRaw: 21, percentCim: 19, // min=19 <20
+        acOnline: false, batteryPresent: true,
+      }),
+      log: () => {},
+      intervalMs: 5,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 30)); // 两连拍确认窗走满
+      assert.equal(handle.snapshot().gate, 'hard', 'min 值 19 触发硬闸（raw 21 单读则不会）');
+      assert.equal(handle.snapshot().percent, 19);
+      assert.equal(handle.snapshot().percentRaw, 21);
+      assert.equal(handle.snapshot().percentCim, 19);
+    } finally {
+      handle.stop();
+    }
+  });
+});
+
+// ── E. notify 出向可观测面（修复批③：静默吞病灶消除）──
+
+describe('修复批③ notify 失败计数+降级告警', () => {
+  it('notify throw ×3 → notifyFailures=3 + 降级告警恰一次；成功 tick 清零复位', async () => {
+    const alerts: Array<{ level: string; title: string }> = [];
+    let fail = true;
+    let flips = 0;
+    const handle = startPowerMonitor({
+      readPower: async () => {
+        // 29,29,55,55,29,29... 序列：防抖确认窗走满后每 2 tick 翻一次闸
+        // （soft 置位/recover 交替），反复制造闸事件驱动 notify 反复投递。
+        flips += 1;
+        return Math.floor((flips - 1) / 2) % 2 === 0 ? reading(29, false) : reading(55, false);
+      },
+      notify: (p) => {
+        if (fail) throw new Error('mock notify fail');
+        alerts.push({ level: p.level, title: p.title });
+      },
+      log: () => {},
+      intervalMs: 5,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 80));
+      const snap = handle.snapshot();
+      assert.ok(snap.notifyFailures >= POWER_NOTIFY_FAILURE_ALARM_THRESHOLD, `连续失败计数达标（现=${snap.notifyFailures}）`);
+      // 降级告警面：失败告警自身也走 notify（同样 throw）→ 只 log，不再抛出。
+      // 恢复：notify 修好 + 电量恢复制造 gate-recover 事件 → 投递成功清零。
+      fail = false;
+      await new Promise((r) => setTimeout(r, 40));
+      assert.equal(handle.snapshot().notifyFailures, 0, '成功 tick 后清零');
+      assert.ok(alerts.length >= 1, '恢复后新事件投递成功');
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it('notify 失败不计入 readFailures（两计数器独立）', async () => {
+    let flips = 0;
+    const handle = startPowerMonitor({
+      readPower: async () => {
+        flips += 1;
+        return flips <= 1 ? reading(29, false) : reading(29, false);
+      },
+      notify: () => { throw new Error('notify down'); },
+      log: () => {},
+      intervalMs: 5,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 40));
+      const snap = handle.snapshot();
+      assert.ok(snap.notifyFailures >= 1, 'notify 失败计数在增');
+      assert.equal(snap.readFailures, 0, '读链活=readFailures 恒零');
     } finally {
       handle.stop();
     }

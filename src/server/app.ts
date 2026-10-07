@@ -1397,9 +1397,10 @@ export function createTriLCApp(env: TriLCEnv) {
   // （daemon 生命周期对齐；server 未起不 spawn 检测进程）。
   let powerMonitor: PowerMonitorHandle | null = null;
   const isPowerGateHard = (): boolean => (powerMonitor?.snapshot().gate ?? 'none') === 'hard';
-  const powerHealthz = (): { percent: number | null; acOnline: boolean | null; gate: string; batteryPresent: boolean } | null => {
+  const powerHealthz = (): { percent: number | null; percentRaw: number | null; percentCim: number | null; acOnline: boolean | null; gate: string; batteryPresent: boolean; readFailures: number; notifyFailures: number } | null => {
     const p = powerMonitor?.snapshot();
-    return p ? { percent: p.percent, acOnline: p.acOnline, gate: p.gate, batteryPresent: p.batteryPresent } : null;
+    // 修复批②③：双读可见化（percentRaw/percentCim）+notifyFailures 计数投影。
+    return p ? { percent: p.percent, percentRaw: p.percentRaw, percentCim: p.percentCim, acOnline: p.acOnline, gate: p.gate, batteryPresent: p.batteryPresent, readFailures: p.readFailures, notifyFailures: p.notifyFailures } : null;
   };
 
   // ── Minimal Cron Engine ──
@@ -1840,7 +1841,7 @@ export function createTriLCApp(env: TriLCEnv) {
           res.end(JSON.stringify(
             powerMonitor
               ? { object: 'power', ...powerMonitor.snapshot() }
-              : { object: 'power', percent: null, acOnline: null, gate: 'none', batteryPresent: true, readFailures: 0, lastReadAt: null },
+              : { object: 'power', percent: null, percentRaw: null, percentCim: null, acOnline: null, gate: 'none', batteryPresent: true, readFailures: 0, notifyFailures: 0, lastReadAt: null },
           ));
           return;
         }
@@ -4554,27 +4555,34 @@ export function createTriLCApp(env: TriLCEnv) {
       // ── LG-069 电量双阈值闸启动（60s 进程内 interval；首读立即校准）──
       // 通知出向接 sg /internal/v1/notify 现役链（TRIMC_NOTIFY_SG_URL 未配置=
       // 通知降级仅日志，闸逻辑照跑——闸是本地面，通知是出向面，fail-open 如实）。
+      // 修复批③：fetch 5s 超时（防 sg 不通拖死 60s tick 节律）+notify 回调
+      // async 化失败上抛（monitor 计 notifyFailures——静默吞病灶消除）。
       const powerNotifyPost = env.notifySgBaseUrl && env.notifySgToken
         ? (payload: Record<string, unknown>): Promise<boolean> =>
             fetch(`${env.notifySgBaseUrl!.replace(/\/$/, '')}/internal/v1/notify`, {
               method: 'POST',
               headers: { 'content-type': 'application/json', 'x-internal-token': env.notifySgToken! },
               body: JSON.stringify(payload),
+              signal: AbortSignal.timeout(5_000),
             }).then((r) => r.ok).catch(() => false)
         : null;
       powerMonitor = startPowerMonitor({
-        notify: (p) => {
+        notify: async (p) => {
           if (!powerNotifyPost) return;
-          for (const seat of p.seats) {
-            void powerNotifyPost({
-              source_seat: 'power-gate',
-              target_daemon: 'trimmc',
-              target_seat: seat,
-              urgent: p.level,
-              title: p.title,
-              body: p.body,
-            });
-          }
+          const results = await Promise.all(
+            p.seats.map((seat) =>
+              powerNotifyPost({
+                source_seat: 'power-gate',
+                target_daemon: 'trimmc',
+                target_seat: seat,
+                urgent: p.level,
+                title: p.title,
+                body: p.body,
+              }),
+            ),
+          );
+          const failed = p.seats.filter((_, i) => !results[i]);
+          if (failed.length > 0) throw new Error(`notify post failed for seats: ${failed.join(',')}`);
         },
         log: (line) => console.log(`[trilc:power] ${line}`),
       });
