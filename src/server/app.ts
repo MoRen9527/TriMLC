@@ -4557,14 +4557,22 @@ export function createTriLCApp(env: TriLCEnv) {
       // 通知降级仅日志，闸逻辑照跑——闸是本地面，通知是出向面，fail-open 如实）。
       // 修复批③：fetch 5s 超时（防 sg 不通拖死 60s tick 节律）+notify 回调
       // async 化失败上抛（monitor 计 notifyFailures——静默吞病灶消除）。
+      // 勘修批④（2026-10-09 03:4x，CTO 裁·LG-069 通知链断点勘修）：装配面双缺陷修正——
+      // ①target_daemon 'trimmc'→'trimlc'（bod/m-cos/m-coo 属 TriMLC 名册，标 trimmc 被 sg
+      //   daemon_seat_mismatch 400 拒；此前被缺陷②403 遮蔽）；source_seat 'power-gate'
+      //   维持（sg 白名单侧加，另窗执行——修复前闸通知仍 403，如实中间态）。
+      // ②失败可观测面：powerNotifyPost 返回 null=成功/string=失败原因（HTTP status/fetch err），
+      //   上抛消息带 per-seat 明细——2026-10-09 凌晨勘修教训（r.ok 吞状态码→403 伪装成
+      //   超时假设误导勘修数小时），下次断链日志一眼定位。
       const powerNotifyPost = env.notifySgBaseUrl && env.notifySgToken
-        ? (payload: Record<string, unknown>): Promise<boolean> =>
+        ? (payload: Record<string, unknown>): Promise<string | null> =>
             fetch(`${env.notifySgBaseUrl!.replace(/\/$/, '')}/internal/v1/notify`, {
               method: 'POST',
               headers: { 'content-type': 'application/json', 'x-internal-token': env.notifySgToken! },
               body: JSON.stringify(payload),
               signal: AbortSignal.timeout(5_000),
-            }).then((r) => r.ok).catch(() => false)
+            }).then((r) => (r.ok ? null : `HTTP ${r.status}`))
+              .catch((e: unknown) => `fetch: ${e instanceof Error ? e.message : String(e)}`)
         : null;
       powerMonitor = startPowerMonitor({
         notify: async (p) => {
@@ -4573,7 +4581,7 @@ export function createTriLCApp(env: TriLCEnv) {
             p.seats.map((seat) =>
               powerNotifyPost({
                 source_seat: 'power-gate',
-                target_daemon: 'trimmc',
+                target_daemon: 'trimlc',
                 target_seat: seat,
                 urgent: p.level,
                 title: p.title,
@@ -4581,8 +4589,10 @@ export function createTriLCApp(env: TriLCEnv) {
               }),
             ),
           );
-          const failed = p.seats.filter((_, i) => !results[i]);
-          if (failed.length > 0) throw new Error(`notify post failed for seats: ${failed.join(',')}`);
+          const failed = p.seats.filter((_, i) => results[i] !== null);
+          if (failed.length > 0) {
+            throw new Error(`notify post failed for seats: ${failed.map((s, i) => `${s}(${results[i]})`).join(',')}`);
+          }
         },
         log: (line) => console.log(`[trilc:power] ${line}`),
       });
