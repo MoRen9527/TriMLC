@@ -35,9 +35,10 @@ export interface CronService {
   /** Current number of consecutive failures (resets to 0 on success). */
   readonly consecutiveFailures: number;
   readonly jobCount: number;
-  /** LG-067 活性探针 healthz 升值面（COO 2026-10-11 排工令）：所有 enabled 且已排程
-   *  job 的最近未来拍点（ISO 串，无则 null）。探针语义：healthz 读数长期滞后于该值
-   *  =「调度活执行停」家族缺陷信号（healthz 假绿防御，2026-10-11 晨 8713 形实证）。 */
+  /** LG-067 活性探针 healthz 升值面（COO 2026-10-11 排工令）：所有 enabled job 的
+   *  最早拍点（ISO 串，无则 null；含过期未触发值——正是本探针要抓的形态，CTO 审勘
+   *  2026-10-11 措辞勘正）。探针语义：healthz 读数长期滞后于该值=「调度活执行停」
+   *  家族缺陷信号（healthz 假绿防御，2026-10-11 晨 8713 形实证）。 */
   readonly nextRunAt: string | null;
   readonly isRunning: boolean;
 }
