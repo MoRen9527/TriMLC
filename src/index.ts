@@ -1,5 +1,6 @@
 import { readFileSync, unlinkSync } from 'node:fs';
 import { readEnv } from './config/env.js';
+import { installCrashHandlers } from './crash-handler.js';
 import { LocalRuntimeDaemon } from './runtime/daemon.js';
 import { createTriLCApp } from './server/app.js';
 import { PID_FILE } from './paths.js';
@@ -168,6 +169,11 @@ async function main(): Promise<void> {
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+
+  // 勘修窗 2026-10-11 件A：全局崩溃 handler——运行期异步未捕获异常→crash.log 结构化
+  // 日志（env.dataDir 下）+受控 exit(1) 交 watchdog revive（pidfile 由上方 exit 钩子清）。
+  // 收口「零 handler 静默 crash」（43480 死因可锚防线）；TRIMLC_CRASH_LOG_ONLY=1 回滚通道。
+  installCrashHandlers({ logDir: env.dataDir });
 
   // Synchronous fallback so the PID file is cleaned even if shutdown()
   // above never runs to completion (e.g. uncaught error path exits).
