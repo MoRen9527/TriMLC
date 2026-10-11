@@ -90,4 +90,38 @@ describe("cron store addJob next_run_at (F-3)", () => {
     assert.ok(job.id, "job must still be created");
     assert.equal(job.nextRunAt, undefined, "unparseable schedule keeps next_run_at NULL");
   });
+
+  // 勘修窗 2026-10-11 件C（F-3 第三型回归钉）：enabled 字段缺省 → 库落 1 回读
+  // true。缺陷原貌：store INSERT `input.enabled ? 1 : 0`（undefined→0）绕过
+  // schema DEFAULT 1，HTTP 路由展开 body 缺 enabled 时 job 静默禁用（GET 可见
+  // 却永不调度·2026-10-11 凌晨三查实锚）。
+  test("enabled omitted: defaults to true (F-3 third-form regression pin)", () => {
+    const store = createCronStore(path.join(tmpDir, "cron.db"));
+    openStores.push(store);
+    const job = store.addJob({
+      name: "f3-enabled-default",
+      schedule: { kind: "every", everyMs: 300000 },
+      systemPrompt: "",
+      // enabled 故意缺省——HTTP body 缺字段透传路径的 store 层等价形
+    } as Parameters<typeof store.addJob>[0]);
+    assert.equal(job.enabled, true, "omitted enabled must normalize to true at store layer");
+    // 回读面：新实例从库加载（非内存对象）同断言
+    const store2 = createCronStore(path.join(tmpDir, "cron.db"));
+    openStores.push(store2);
+    const loaded = store2.getJob(job.id);
+    assert.ok(loaded, "job must round-trip via db");
+    assert.equal(loaded.enabled, true, "db row must carry enabled=1");
+  });
+
+  test("enabled explicit false: stays false (no over-normalization)", () => {
+    const store = createCronStore(path.join(tmpDir, "cron.db"));
+    openStores.push(store);
+    const job = store.addJob({
+      name: "f3-enabled-false",
+      schedule: { kind: "every", everyMs: 300000 },
+      systemPrompt: "",
+      enabled: false,
+    });
+    assert.equal(job.enabled, false, "explicit false must stay false");
+  });
 });

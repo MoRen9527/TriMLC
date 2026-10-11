@@ -249,7 +249,11 @@ export function createCronStore(dbPath: string) {
     stmt.run(
       id, input.name, scheduleKind, scheduleValue, scheduleTz,
       input.systemPrompt, input.command ?? null, input.roleId ?? null,
-      input.enabled ? 1 : 0, now, now, nextRunAt,
+      // 勘修窗 2026-10-11 件C（F-3 第三型）：enabled 缺省归一 true——显式传
+      // undefined（HTTP 路由展开 body 缺字段）此前落 0=静默禁用且 GET 可见却永不
+      // 调度。?? true 对齐 schema DEFAULT 1 意图；显式 false 保持 0。store 层归一
+      // 即全入口覆盖（app.ts 路由面不动）。
+      ((input.enabled ?? true)) ? 1 : 0, now, now, nextRunAt,
     );
 
     const row = db.prepare("SELECT * FROM cron_jobs WHERE id = ?").get(id) as unknown as CronJobRow;
