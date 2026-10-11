@@ -35,6 +35,10 @@ export interface CronService {
   /** Current number of consecutive failures (resets to 0 on success). */
   readonly consecutiveFailures: number;
   readonly jobCount: number;
+  /** LG-067 活性探针 healthz 升值面（COO 2026-10-11 排工令）：所有 enabled 且已排程
+   *  job 的最近未来拍点（ISO 串，无则 null）。探针语义：healthz 读数长期滞后于该值
+   *  =「调度活执行停」家族缺陷信号（healthz 假绿防御，2026-10-11 晨 8713 形实证）。 */
+  readonly nextRunAt: string | null;
   readonly isRunning: boolean;
 }
 
@@ -83,6 +87,10 @@ export function createCronService(deps: CronServiceDeps): CronService {
   return {
     get jobCount(): number {
       return store.listJobs().length;
+    },
+
+    get nextRunAt(): string | null {
+      return computeNextRunAt(store.listJobs());
     },
 
     get isRunning(): boolean {
@@ -197,4 +205,24 @@ export function createCronService(deps: CronServiceDeps): CronService {
       return Promise.resolve(logs);
     },
   };
+}
+
+/** LG-067 活性探针升值面核心逻辑（纯函数·白盒单测直喂 job 数组零 stub）：
+ *  参与集合 = enabled 且 nextRunAt 非空且可解析；取最早拍点（最近未来触发）。
+ *  防御：非法 ISO 串静默排除（坏行不拖垮探针读数）。 */
+export function computeNextRunAt(
+  jobs: ReadonlyArray<{ enabled?: boolean; nextRunAt?: string | null }>,
+): string | null {
+  let best: string | null = null;
+  let bestMs = Infinity;
+  for (const j of jobs) {
+    if (!j?.enabled || !j.nextRunAt) continue;
+    const ms = Date.parse(j.nextRunAt);
+    if (!Number.isFinite(ms)) continue;
+    if (ms < bestMs) {
+      bestMs = ms;
+      best = j.nextRunAt;
+    }
+  }
+  return best;
 }

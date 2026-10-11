@@ -1741,6 +1741,9 @@ export function createTriLCApp(env: TriLCEnv) {
               jobCount: cronEngine.jobCount,
               degraded: cronEngine.isDegraded(),
               consecutiveFailures: cronEngine.consecutiveFailures,
+              // LG-067 活性探针升值面：字段名取令面字面 next_run_at（与 store sqlite
+              // 列名同形、探针消费契约对齐；面内其余键 camelCase，混形系有意为之）。
+              next_run_at: cronEngine.nextRunAt,
             },
             sessionReaper: {
               enabled: sessionReaper.isRunning(),
