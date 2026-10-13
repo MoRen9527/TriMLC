@@ -185,7 +185,7 @@ export function parsePowerOutput(out: string): PowerReading {
   return { percent, percentRaw: raw, percentCim: cim, acOnline: ac === 1, batteryPresent };
 }
 
-export function defaultReadPower(timeoutMs = 10_000): Promise<PowerReading> {
+export function defaultReadPower(timeoutMs = 20_000): Promise<PowerReading> {
   return new Promise((resolve, reject) => {
     // PSModulePath 净化（教训族：父链 pwsh7 目录污染致 PS5.1 加载错版模块）——
     // 删除后 powershell.exe 按自身缺省重建模块路径。
@@ -259,7 +259,10 @@ export const POWER_NOTIFY_FAILURE_ALARM_THRESHOLD = 3;
 export function startPowerMonitor(deps: PowerMonitorDeps): PowerMonitorHandle {
   const cfg: PowerGateConfig = { ...DEFAULT_POWER_GATE_CONFIG, ...deps.config };
   const read = deps.readPower ?? defaultReadPower;
-  const log = deps.log ?? (() => {});
+  // 2026-10-13 勘修窗（BOD §173 会签）：log 行加时戳前缀——channel.log 行无时戳
+  // 系事后勘测盲区（同日实证：power 失败轨迹无法对表 AC 切换段）。
+  const rawLog = deps.log ?? (() => {});
+  const log = (line: string) => rawLog(`[${new Date().toISOString()}] ${line}`);
   // 初态=乐观有电池（未初读前 gate=none 恒放行零行为；首 tick 立即校准）。
   let st: PowerGateState = { gate: "none", pendingZone: null, pendingCount: 0, batteryPresent: true };
   let lastPct: number | null = null;
