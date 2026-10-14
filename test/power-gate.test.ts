@@ -233,6 +233,30 @@ describe('修复批① 双读保守 min', () => {
       handle.stop();
     }
   });
+
+  it('快照面 lastReadAt 双相：读失败期 null→读成功后非 null 且 ISO 可解析（healthz 投影前置件·从闸 staleness 输入面）', async () => {
+    let fail = true;
+    const handle = startPowerMonitor({
+      readPower: async () => {
+        if (fail) throw new Error('mock read fail');
+        return reading(55, false);
+      },
+      log: () => {},
+      intervalMs: 5,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 30)); // 失败期（>=2 tick）
+      assert.equal(handle.snapshot().lastReadAt, null, '读失败期 lastReadAt=null（staleness 判定不得消费陈旧值）');
+
+      fail = false;
+      await new Promise((r) => setTimeout(r, 30)); // 恢复 tick
+      const lra = handle.snapshot().lastReadAt;
+      assert.ok(lra !== null, '读成功后 lastReadAt 非 null');
+      assert.ok(!Number.isNaN(Date.parse(lra as string)), `ISO 可解析（实际=${String(lra)}）`);
+    } finally {
+      handle.stop();
+    }
+  });
 });
 
 // ── E. notify 出向可观测面（修复批③：静默吞病灶消除）──

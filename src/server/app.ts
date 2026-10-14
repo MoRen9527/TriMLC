@@ -1397,10 +1397,12 @@ export function createTriLCApp(env: TriLCEnv) {
   // （daemon 生命周期对齐；server 未起不 spawn 检测进程）。
   let powerMonitor: PowerMonitorHandle | null = null;
   const isPowerGateHard = (): boolean => (powerMonitor?.snapshot().gate ?? 'none') === 'hard';
-  const powerHealthz = (): { percent: number | null; percentRaw: number | null; percentCim: number | null; acOnline: boolean | null; gate: string; batteryPresent: boolean; readFailures: number; notifyFailures: number } | null => {
+  const powerHealthz = (): { percent: number | null; percentRaw: number | null; percentCim: number | null; acOnline: boolean | null; gate: string; batteryPresent: boolean; readFailures: number; notifyFailures: number; lastReadAt: string | null } | null => {
     const p = powerMonitor?.snapshot();
     // 修复批②③：双读可见化（percentRaw/percentCim）+notifyFailures 计数投影。
-    return p ? { percent: p.percent, percentRaw: p.percentRaw, percentCim: p.percentCim, acOnline: p.acOnline, gate: p.gate, batteryPresent: p.batteryPresent, readFailures: p.readFailures, notifyFailures: p.notifyFailures } : null;
+    // 10-14 前置件：lastReadAt 投影（CTO 二期稿 §2.2 裁据3）——TriRLC 8711 从闸
+    // staleness 传染防御的输入面（snapshot 有、healthz 落投影漏的可见性缺口本体）。
+    return p ? { percent: p.percent, percentRaw: p.percentRaw, percentCim: p.percentCim, acOnline: p.acOnline, gate: p.gate, batteryPresent: p.batteryPresent, readFailures: p.readFailures, notifyFailures: p.notifyFailures, lastReadAt: p.lastReadAt } : null;
   };
 
   // ── Minimal Cron Engine ──
