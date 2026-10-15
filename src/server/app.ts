@@ -3382,6 +3382,88 @@ export function createTriLCApp(env: TriLCEnv) {
         }
 
 
+        // ── POST /internal/v1/notify（Q2 反向通道收箱落箱端点·2026-10-15）──
+        // 回声拉取器（scripts/fade/echo-pull.mjs）把 sg 服务域出向队列信投本机信箱。
+        // 红线②技术形：SOURCE_SEAT_WHITELIST 同族（一期最小集=拉取器席 1 席·写死零 env
+        // 面=零配置漂移）；白名单外=403+console 留痕（负向探针案机器可判）。
+        // 红线①技术形：字段白名单（五字段·零 file/binary 传输字段）+text≤8KB——schema
+        // 校验双层的服务域侧在 TriMMC 入队端，本端=本地落箱侧第二层。
+        // 红线③技术形：echo 席来件服务端强制 advisory:true（不信任客户端字段——收推
+        // ≠执行）；信箱写入与 cron/job 调度 API 零共享面（现役结构分离·设计注记）。
+        if (req.url === '/internal/v1/notify' && req.method === 'POST') {
+          const SOURCE_SEAT_WHITELIST: ReadonlySet<string> = new Set(['mc-echo-pull']);
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) chunks.push(chunk as Buffer);
+          const raw = Buffer.concat(chunks);
+          if (raw.byteLength > 16 * 1024) {
+            console.log('[trilc:notify-in] reject: payload-too-large (over 16KB envelope cap)');
+            res.writeHead(413, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'payload_too_large' }));
+            return;
+          }
+          let body: Record<string, unknown> = {};
+          try { body = JSON.parse(raw.toString('utf-8')) as Record<string, unknown>; }
+          catch {
+            // 坏 JSON 显式 400（client error），禁滑落白名单支伪装成 403（语义混淆防线）
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'bad_json' }));
+            return;
+          }
+          // message_id 可选透传（端到端幂等锚：拉取器重试同队列项→同 id→duplicate=true
+          // →安全消账；缺省=服务端生成。非 file/binary 传输字段·仍在白名单 schema 内）。
+          const ALLOWED_KEYS = new Set(['message_id', 'source_seat', 'target_seat', 'urgent', 'title', 'body']);
+          const extraKeys = Object.keys(body).filter((k) => !ALLOWED_KEYS.has(k));
+          if (extraKeys.length > 0) {
+            // 红线①字段白名单：含 file/binary 在内的任何未列字段=拒（schema 演化破约防线）
+            console.log(`[trilc:notify-in] reject: forbidden-fields (${extraKeys.join(',')})`);
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'forbidden_fields', fields: extraKeys }));
+            return;
+          }
+          const sourceSeat = typeof body.source_seat === 'string' ? body.source_seat : '';
+          if (!SOURCE_SEAT_WHITELIST.has(sourceSeat)) {
+            console.log(`[trilc:notify-in] reject-403: source_seat not in whitelist (${sourceSeat || '(empty)'})`);
+            res.writeHead(403, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'source_seat_not_allowed' }));
+            return;
+          }
+          const title = typeof body.title === 'string' ? body.title : '';
+          const text = typeof body.body === 'string' ? body.body : '';
+          if (!title || !text) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'title_and_body_required' }));
+            return;
+          }
+          if (Buffer.byteLength(text, 'utf-8') > 8 * 1024) {
+            console.log('[trilc:notify-in] reject: body-over-8KB (红线① no-file-transfer form)');
+            res.writeHead(413, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'body_over_8kb' }));
+            return;
+          }
+          const targetSeat = typeof body.target_seat === 'string' && body.target_seat ? body.target_seat : 'm-cos';
+          const urgent = body.urgent === 'urgent' ? 'urgent' as const : 'normal' as const;
+          // advisory 服务端强制打标（echo 席=回声件·收推≠执行）
+          const advisory = sourceSeat === 'mc-echo-pull' ? true : undefined;
+          const { storeLetter } = await import('../notify/letter-store.js');
+          const messageId = typeof body.message_id === 'string' && body.message_id
+            ? body.message_id
+            : `echo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          const { stored, duplicate } = storeLetter({
+            message_id: messageId,
+            source_seat: sourceSeat,
+            target_seat: targetSeat,
+            urgent,
+            title,
+            body: text,
+            ...(advisory !== undefined ? { advisory } : {}),
+            delivery: 'mailbox',
+          });
+          console.log(`[trilc:notify-in] stored=${stored} duplicate=${duplicate} source=${sourceSeat} advisory=${String(advisory)}`);
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, stored, duplicate }));
+          return;
+        }
+
         // ── LG-036：信箱可见面（「信箱必须可见」GET 计数端点；X-Internal-Token 门内）──
         if (req.url?.startsWith('/internal/v1/notify/mailbox')) {
           const { mailboxSummary, markRead } = await import('../notify/letter-store.js');

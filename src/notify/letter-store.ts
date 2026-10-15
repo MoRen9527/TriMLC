@@ -13,6 +13,10 @@ export interface NotifyLetter {
   urgent: 'urgent' | 'normal';
   title: string;
   body: string;
+  /** Q2 反向通道（2026-10-15）：回声拉取件=advisory 标（服务端强制打·见 app.ts
+   *  SOURCE_SEAT_WHITELIST 段）——收推≠执行（CPO 红线③）：带标信=纯待阅数据，
+   *  对本地域无任何可触发执行的路由面。现役席信不带此字段（undefined·零行为变化）。 */
+  advisory?: boolean;
   received_at: string;
   delivery: 'toast' | 'mailbox';
   delivered_at: string;
