@@ -269,6 +269,14 @@
 - 本批只做注释/文档正名，wire 字段不退役：消费方 TriCompany `runtime/cognition/mc_link_check.py`（兼容读，同批正名注释+打印行消歧）与 TriMetaverse `scripts/verify-trilc-24h.ps1`（打印）未迁移，退役候消费方迁移后另批；届时 src 内 `trimcBaseUrl` 变量族与 env `TRIMC_BASE_URL` 同步裁决（env 改名涉部署合同，须随 daemon 停起窗，勿热改）。
 - 运行实例注记（拉起源，顺带件）：现役 8713 进程 09-09 12:53:19+08 人工经常驻会话 Start-Process 启动（stdout.log/stderr.log 分文件重定向为指纹），非 v3 cmd（channel.log 命名）/非 schtasks（TriMLC-Channel 任务存在但 ACL 保护+属主 jedih 证伪）/非 cron；12:52:12 一次 UAC 无 env 首试写 `%LOCALAPPDATA%\trilc` 默认目录后短存退场——wave0 §三「trilc 重生态写手」候选即此（已退场无现役写手）。
 
+## Q2 反向通道收箱端点（2026-10-15，CTO 派工单 046caf7cb 件③·FSD 小全·commit 82e8fc1）
+
+- **新端点 `POST /internal/v1/notify`**（`src/server/app.ts`，X-Internal-Token 门内·LG-036 mailbox 端点区前）：Q2 回声拉取器（TriMetaverse `scripts/fade/echo-pull.mjs`·152a4d470）落箱入口。`SOURCE_SEAT_WHITELIST` 写死 `{mc-echo-pull}` 单值（零 env 面·红线②最小集锚）；载荷字段白名单六键（message_id/source_seat/target_seat/urgent/title/body·file/binary 等未列键 400·红线①）；body≤8KB（Buffer.byteLength 字节面）+信封≤16KB；白名单外 403 `source_seat_not_allowed`+console 留痕；坏 JSON 显式 400 `bad_json`；echo 席来件 `advisory:true` 服务端强制打标（客户端字段不可提交·红线③收推≠执行）。
+- **信箱 schema**：`NotifyLetter` 加 `advisory?: boolean`（`src/notify/letter-store.ts`）——现役席信 undefined 零行为变化；带标信=纯待阅数据。
+- **幂等锚**：message_id 客户端透传（拉取器重试同队列项→同 id→`duplicate:true`→安全消账）；缺省服务端生成 `echo-<ts36>-<rand>`。
+- 测试：`test/server/notify-inbox-endpoint.test.ts` 12 例（真起服 node:http·红线四条逐条入测）12/12 PASS；全量基线 687 例 5 败族 stash 对照独立验全部既有（replay-flow 旧名 import / tui 缺 ink-testing-library / auth-gate healthz 名漂移 / FADE-ASSESS-005 两例 / notify 计数 flake）与本件零涉。
+- 部署态（如实标记）：现役 8713 daemon 跑旧 dist 构建——本端点 src 已绿未上运行位，候 2026-10-15 19:00-20:00 归一窗冷启拾取（与 TRILC_CRON_COMMAND_ALLOWLIST 追加 echo-pull+token 轮换并窗单次冷启）。
+
 ## Sources
 
 - `../../src/runtime/`
