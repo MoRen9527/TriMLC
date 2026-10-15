@@ -33,3 +33,5 @@ notify-mailbox.json
 # 卫生批 2026-10-15（BOD 直跑令·卫①）：部署/回滚备份目录实际命名（连字符形——现规则 dist.bak*/ 带点形匹配不上）+信箱备份族挡未来新增
 dist-bak-pre-*/
 notify-mailbox-backup-pre-*.json
+notify-mailbox.backup-*.json
+notify-mailbox.json.bak-pre-*
