@@ -255,6 +255,9 @@ export interface PowerMonitorHandle {
 
 export const POWER_READ_FAILURE_ALARM_THRESHOLD = 3;
 export const POWER_NOTIFY_FAILURE_ALARM_THRESHOLD = 3;
+// LG-088 件b1 唤醒补报：tick 冻结差值阈值——60s 节律下正常拍间差 ≤~61s，
+// >5min = 宿主历系统级冻结（睡眠/休眠，interval 被冻结）强信号（家族两案 2h16m/8h 皆远超）。
+export const POWER_WAKE_GAP_MS = 5 * 60 * 1000;
 
 export function startPowerMonitor(deps: PowerMonitorDeps): PowerMonitorHandle {
   const cfg: PowerGateConfig = { ...DEFAULT_POWER_GATE_CONFIG, ...deps.config };
@@ -311,6 +314,23 @@ export function startPowerMonitor(deps: PowerMonitorDeps): PowerMonitorHandle {
   }
 
   async function tick(): Promise<void> {
+    // ── b1 唤醒补报（LG-088 件b·charter-2026-W42-005 E1-3）──
+    // tick 冻结差值检测：上次成功读距 now 超阈值=系统级冻结恢复后首拍——补报值守面。
+    // 天然一次/冻结段（本拍尾 lastReadAt 更新即不再触发）。已知误报形态：检测链长冻结
+    // （read 连续失败段）恢复后首拍亦触发——文带分诊提示（冻结≠定谳睡眠，方案稿 b2 同款）。
+    if (lastReadAt != null) {
+      const gapMs = Date.now() - new Date(lastReadAt).getTime();
+      if (gapMs > POWER_WAKE_GAP_MS) {
+        const gapMin = Math.round(gapMs / 60000);
+        log(`wake-gap detected: ${gapMin}min silent gap (lastReadAt=${lastReadAt}) — reporting`);
+        void dispatchNotify({
+          level: "normal",
+          seats: ["m-cos"],
+          title: "[LG-088] 唤醒补报·疑宿主睡眠冻结窗",
+          body: `TriMLC 检测链历 ${gapMin} 分钟空窗（lastReadAt=${lastReadAt} → 现查），疑宿主睡眠冻结（家族先例 10-12/10-16；亦可能为检测链长冻结·请分诊）——daemon 已解冻恢复，值守链请对表该窗内缺口（tick 缺拍段/告警面盲区）。`,
+        });
+      }
+    }
     let r: PowerReading;
     try {
       r = await read();
