@@ -8,6 +8,8 @@ import { PID_FILE } from './paths.js';
 import { registerPid, unregisterPid } from './pidfile.js';
 import { configureKnowledgePathResolver } from '@trimetaverse/tricode';
 import { getKnowledgeDbPath as knowledgeDbPathResolver, enforceProjectIsolation as enforceKnowledgeIsolation } from './project/multi-project-router.js';
+// LG-088/E1-2 a件: process-level power keep-alive (SetThreadExecutionState, win32 only, degrade-safe)
+import { keepSystemAwake, releaseKeepAwake } from './power-keepalive.js';
 
 // ── Tool registration (CC-equivalent tools) ──
 // Register before daemon starts accepting agent traffic.
@@ -110,6 +112,10 @@ async function main(): Promise<void> {
   const daemon = new LocalRuntimeDaemon(env);
   await daemon.start();
 
+  // LG-088/E1-2 a件: duty 进程电源保活——值守期间阻系统空闲睡眠
+  // （进程死 OS 自动失效为主保险；加载失败仅降级 warn 不阻启动）
+  keepSystemAwake();
+
   // Start HTTP server for TriPilot/TriCode connectivity
   // P6: MCP init
   try {
@@ -157,6 +163,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     console.log(`[trilc] received ${signal}, shutting down gracefully...`);
     try {
+      releaseKeepAwake(); // LG-088 a件: 关停即释放电源请求（整洁性补·进程死自动失效为主保险）
       await app.stop();
       await daemon.stop();
       await unregisterPid(app.port); // 同裁定①：port 参对表（与 registerPid 同键位）
