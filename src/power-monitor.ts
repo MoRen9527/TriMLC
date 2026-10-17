@@ -74,6 +74,15 @@ export interface PowerSnapshot {
   /** 修复批③：notify 出向连续失败计数（成功 tick 清零）。 */
   notifyFailures: number;
   lastReadAt: string | null;
+  // ── b1 v2 事件订阅线观测面（healthz 透出·观测面自身可观测）──
+  /** 最新一次读到的 507 wakeAt（未评估也记）。 */
+  lastWakeSeenAt: string | null;
+  /** 最新一次已评估段 wakeAt（基线吸收/阈值吸收/已报均推进）。 */
+  lastHandledWakeAt: string | null;
+  /** wevtutil 查询连续失败计数（成功清零；仅日志不接 urgent——观测面缺失≠闸失效）。 */
+  wakePollFailures: number;
+  /** 最近一次达标报告的睡眠段（心跳面 recentWake 字段数据源·§六增量批件）。 */
+  lastWakeReport: WakeSegment | null;
 }
 
 // ── 纯状态机（单测直接驱动，不依赖定时器/真实电量）──
@@ -227,6 +236,50 @@ export function defaultReadPower(timeoutMs = 20_000): Promise<PowerReading> {
   });
 }
 
+// b1 v2 查询面：wevtutil 直 spawn（args 数组零 shell——Git Bash MSYS 路径改写
+// 坑不适用 node 侧；2026-10-17 实测 RC=0·38ms·输出 UTF-8 单行 XML 无编码坑）。
+// System 日志 Users 默认可读（同日 A1 勘验非提升会话实读实证），零提权。
+export function defaultQueryWakeEventsXml(timeoutMs = 10_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "wevtutil",
+      [
+        "qe",
+        "System",
+        "/q:*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=506 or EventID=507)]]",
+        "/c:10",
+        "/rd:true",
+        "/f:xml",
+      ],
+      { windowsHide: true },
+    );
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error("wake event query timeout"));
+    }, timeoutMs);
+    child.stdout.on("data", (d: Buffer) => {
+      out += d.toString();
+    });
+    child.stderr.on("data", (d: Buffer) => {
+      err += d.toString();
+    });
+    child.on("error", (e: Error) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        reject(new Error(`wake query failed: code=${code} ${err.slice(0, 160).trim()}`));
+        return;
+      }
+      resolve(out);
+    });
+  });
+}
+
 // ── Monitor（interval 封装+通知出向+失效段告警）──
 
 export interface PowerNotifyPayload {
@@ -239,6 +292,9 @@ export interface PowerNotifyPayload {
 export interface PowerMonitorDeps {
   /** 缺省=defaultReadPower（真机检测）；单测注入 mock。 */
   readPower?: () => Promise<PowerReading>;
+  /** 缺省=defaultQueryWakeEventsXml（真机 wevtutil）；非 win32 或单测注入。
+   * b1 v2 缝——沿 readPower 注入正形。 */
+  queryWakeEventsXml?: () => Promise<string>;
   /** 通知出向（app.ts 接 sg /internal/v1/notify 现役链）；未注入=仅日志。
    * 修复批③：async 化——throw/reject=投递失败（计 notifyFailures），静默吞
    * 病灶消除（BOD 定性「notify 静默吞」实锚=装配面 void fire-and-forget）。 */
@@ -255,13 +311,105 @@ export interface PowerMonitorHandle {
 
 export const POWER_READ_FAILURE_ALARM_THRESHOLD = 3;
 export const POWER_NOTIFY_FAILURE_ALARM_THRESHOLD = 3;
-// LG-088 件b1 唤醒补报：tick 冻结差值阈值——60s 节律下正常拍间差 ≤~61s，
-// >5min = 宿主历系统级冻结（睡眠/休眠，interval 被冻结）强信号（家族两案 2h16m/8h 皆远超）。
-export const POWER_WAKE_GAP_MS = 5 * 60 * 1000;
+// LG-088 件b1 v2（F 件·CEO 2026-10-17 11:00:25 两裁①）：唤醒补报阈值——睡眠段
+// 时长 >5min 才补报（浅睡段静默防噪声；今晨实证段① 2min57s 静默·段②③ 64min/
+// 5min49s 应报）。v1 tick 冻结差值法（POWER_WAKE_GAP_MS）已删除——结构性缺陷：
+// 观测者自身=测量载体，冻结即失效、DRIPS 维护窗拍污染 lastReadAt 即静默破坏
+// （2026-10-17 实证：醒后 100+ tick 零触发），观测面不可自证不可修。
+// v2=Kernel-Power 506/507 事件订阅线：OS 内核写入的持久化事实源，拉取式查询
+// （wevtutil /rd:true 倒序），观测者只是读者——读者可冻结，事实源死不了。
+export const POWER_WAKE_MIN_DURATION_MS = 5 * 60 * 1000;
+
+// ── b1 v2 纯函数面（单测直驱·test/wake-events.test.ts）──
+
+export interface WakeSegment {
+  /** 唤醒时刻（507 TimeCreated SystemTime·ISO）。 */
+  wakeAt: string;
+  /** 入睡时刻（配对 506·文档序其后最近一条）；缺失=null（缺对不造数）。 */
+  sleepAt: string | null;
+  /** 睡眠段时长：主判=507 EventData DurationInUs（OS 官方口径）；fallback=
+   * wake−sleep 配对差；双缺=null（时长不可判·不报——如实边界）。 */
+  durationMs: number | null;
+}
+
+/**
+ * 解析 wevtutil /f:xml 输出（单行多 <Event> 串·/rd:true 契约=文档序为时间倒序）
+ * →最近一次睡眠段。无 507（未醒/无睡眠史）=null。非 506/507 事件块忽略。
+ */
+export function parseWakeEvents(xml: string): WakeSegment | null {
+  const events: { id: number; at: string; durationUs: number | null }[] = [];
+  for (const m of xml.matchAll(/<Event\b[\s\S]*?<\/Event>/g)) {
+    const block = m[0];
+    const id = block.match(/<EventID>(\d+)<\/EventID>/);
+    const at = block.match(/<TimeCreated SystemTime='([^']+)'/);
+    if (!id || !at) continue;
+    const eid = Number(id[1]);
+    if (eid !== 506 && eid !== 507) continue;
+    const dur =
+      eid === 507 ? block.match(/<Data Name='DurationInUs'>(\d+)<\/Data>/) : null;
+    events.push({ id: eid, at: at[1], durationUs: dur ? Number(dur[1]) : null });
+  }
+  const wakeIdx = events.findIndex((e) => e.id === 507);
+  if (wakeIdx === -1) return null;
+  const wake = events[wakeIdx];
+  const sleep = events.slice(wakeIdx + 1).find((e) => e.id === 506) ?? null;
+  const durationMs =
+    wake.durationUs != null
+      ? wake.durationUs / 1000
+      : sleep
+        ? Date.parse(wake.at) - Date.parse(sleep.at)
+        : null;
+  return { wakeAt: wake.at, sleepAt: sleep ? sleep.at : null, durationMs };
+}
+
+export interface WakeMonitorState {
+  /** 首拍基线吸收（防 restart 后重放历史睡眠段误报——生效窗自身要 restart）。 */
+  baselineAbsorbed: boolean;
+  /** 已评估的最新段 wakeAt（含未达阈值被吸收的段——每段只评估一次）。 */
+  lastHandledWakeAt: string | null;
+}
+
+export const WAKE_MONITOR_INIT: WakeMonitorState = {
+  baselineAbsorbed: false,
+  lastHandledWakeAt: null,
+};
+
+/**
+ * 状态机单步：首段=基线吸收只记不报；旧段重读=幂等跳过；新段未达阈值（含时长
+ * 不可判）=吸收不报；新段达标=报告。报告即吸收（lastHandledWakeAt 推进）。
+ */
+export function processWakeSegment(
+  prev: WakeMonitorState,
+  seg: WakeSegment | null,
+  minDurationMs: number = POWER_WAKE_MIN_DURATION_MS,
+): { state: WakeMonitorState; report: WakeSegment | null } {
+  if (!seg) return { state: prev, report: null };
+  if (!prev.baselineAbsorbed) {
+    return {
+      state: { baselineAbsorbed: true, lastHandledWakeAt: seg.wakeAt },
+      report: null,
+    };
+  }
+  if (
+    prev.lastHandledWakeAt != null &&
+    Date.parse(seg.wakeAt) <= Date.parse(prev.lastHandledWakeAt)
+  ) {
+    return { state: prev, report: null };
+  }
+  const next: WakeMonitorState = {
+    baselineAbsorbed: true,
+    lastHandledWakeAt: seg.wakeAt,
+  };
+  if (seg.durationMs == null || seg.durationMs < minDurationMs) {
+    return { state: next, report: null };
+  }
+  return { state: next, report: seg };
+}
 
 export function startPowerMonitor(deps: PowerMonitorDeps): PowerMonitorHandle {
   const cfg: PowerGateConfig = { ...DEFAULT_POWER_GATE_CONFIG, ...deps.config };
   const read = deps.readPower ?? defaultReadPower;
+  const queryWake = deps.queryWakeEventsXml ?? defaultQueryWakeEventsXml;
   // 2026-10-13 勘修窗（BOD §173 会签）：log 行加时戳前缀——channel.log 行无时戳
   // 系事后勘测盲区（同日实证：power 失败轨迹无法对表 AC 切换段）。
   const rawLog = deps.log ?? (() => {});
@@ -278,6 +426,11 @@ export function startPowerMonitor(deps: PowerMonitorDeps): PowerMonitorHandle {
   let failAlarmSent = false;
   let notifyAlarmSent = false;
   let disabledLogged = false;
+  // ── b1 v2 事件订阅线状态 ──
+  let wakeSt: WakeMonitorState = { ...WAKE_MONITOR_INIT };
+  let lastWakeSeenAt: string | null = null;
+  let wakePollFailures = 0;
+  let lastWakeReport: WakeSegment | null = null;
 
   /** 修复批③：通知出向唯一入口——await + 失败计数 + 连续≥3 降级告警（一次/
    * 失效段；告警自身失败仅日志不递归计数，通道死时唯一可观测=日志，如实）。 */
@@ -314,21 +467,34 @@ export function startPowerMonitor(deps: PowerMonitorDeps): PowerMonitorHandle {
   }
 
   async function tick(): Promise<void> {
-    // ── b1 唤醒补报（LG-088 件b·charter-2026-W42-005 E1-3）──
-    // tick 冻结差值检测：上次成功读距 now 超阈值=系统级冻结恢复后首拍——补报值守面。
-    // 天然一次/冻结段（本拍尾 lastReadAt 更新即不再触发）。已知误报形态：检测链长冻结
-    // （read 连续失败段）恢复后首拍亦触发——文带分诊提示（冻结≠定谳睡眠，方案稿 b2 同款）。
-    if (lastReadAt != null) {
-      const gapMs = Date.now() - new Date(lastReadAt).getTime();
-      if (gapMs > POWER_WAKE_GAP_MS) {
-        const gapMin = Math.round(gapMs / 60000);
-        log(`wake-gap detected: ${gapMin}min silent gap (lastReadAt=${lastReadAt}) — reporting`);
-        void dispatchNotify({
-          level: "normal",
-          seats: ["m-cos"],
-          title: "[LG-088] 唤醒补报·疑宿主睡眠冻结窗",
-          body: `TriMLC 检测链历 ${gapMin} 分钟空窗（lastReadAt=${lastReadAt} → 现查），疑宿主睡眠冻结（家族先例 10-12/10-16；亦可能为检测链长冻结·请分诊）——daemon 已解冻恢复，值守链请对表该窗内缺口（tick 缺拍段/告警面盲区）。`,
-        });
+    // ── b1 v2 唤醒补报（F 件·CEO 2026-10-17 两裁①·Kernel-Power 事件订阅线）──
+    // 串行挂现役 60s tick（wevtutil ~40ms 实测，追加后 tick 总时长仍 <<60s 节律）。
+    // 非 win32 静默跳过（跨平台 guard）；查询失败计数+日志不接 urgent（观测面
+    // 缺失≠闸失效，闸有独立 read 失败告警面）。首拍基线吸收防 restart 重放。
+    if (process.platform === "win32") {
+      try {
+        const xml = await queryWake();
+        wakePollFailures = 0;
+        const seg = parseWakeEvents(xml);
+        if (seg) lastWakeSeenAt = seg.wakeAt;
+        const { state, report } = processWakeSegment(wakeSt, seg);
+        wakeSt = state;
+        if (report) {
+          lastWakeReport = report;
+          const min = Math.round((report.durationMs ?? 0) / 60000);
+          log(
+            `wake segment detected: sleep=${report.sleepAt ?? "?"} wake=${report.wakeAt} (${min}min) — reporting`,
+          );
+          void dispatchNotify({
+            level: "normal",
+            seats: ["m-cos"],
+            title: "[LG-088] 唤醒补报·宿主睡眠段（事件日志锚）",
+            body: `TriMLC 事件订阅线捕获睡眠段：入睡=${report.sleepAt ?? "缺对"} 唤醒=${report.wakeAt} 时长≈${min}min（Kernel-Power 506/507·OS 事实源）——daemon 已醒恢复值守，请对表该窗内缺口（tick 缺拍段/告警面盲区/跨机链路）。`,
+          });
+        }
+      } catch (e) {
+        wakePollFailures += 1;
+        log(`wake event poll failure #${wakePollFailures}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
     let r: PowerReading;
@@ -416,6 +582,10 @@ export function startPowerMonitor(deps: PowerMonitorDeps): PowerMonitorHandle {
         readFailures,
         notifyFailures,
         lastReadAt,
+        lastWakeSeenAt,
+        lastHandledWakeAt: wakeSt.lastHandledWakeAt,
+        wakePollFailures,
+        lastWakeReport,
       };
     },
     stop(): void {

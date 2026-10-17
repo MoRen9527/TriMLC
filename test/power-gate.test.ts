@@ -35,6 +35,10 @@ function reading(percent: number | null, acOnline: boolean, batteryPresent = tru
   return { percent, percentRaw: percent, percentCim: percent, acOnline, batteryPresent };
 }
 
+// F 件 b1 v2（2026-10-17）缝注入：单测零外进程（wevtutil）零延迟——空 XML=
+// parseWakeEvents null=零行为。旧用例统一补注（非断言语义变更，仅依赖注入）。
+const NO_WAKE = async () => '';
+
 function step2(prev: PowerGateState, r: PowerReading) {
   const a = stepPowerGate(prev, r, CFG);
   return stepPowerGate(a.state, r, CFG); // 同读数两连拍=确认窗走满
@@ -136,6 +140,7 @@ describe('LG-069 startPowerMonitor 检测失败告警', () => {
     const alerts: Array<{ level: string; seats: string[]; title: string }> = [];
     let fail = true;
     const handle = startPowerMonitor({
+      queryWakeEventsXml: NO_WAKE,
       readPower: async () => {
         if (fail) throw new Error('mock read fail');
         return reading(55, false);
@@ -216,6 +221,7 @@ describe('修复批① 双读保守 min', () => {
 
   it('状态机端到端：mock 分叉读数 → 闸判定吃 min 值（raw 21/cim 19 → hard）', async () => {
     const handle = startPowerMonitor({
+      queryWakeEventsXml: NO_WAKE,
       readPower: async () => ({
         percent: 19, percentRaw: 21, percentCim: 19, // min=19 <20
         acOnline: false, batteryPresent: true,
@@ -237,6 +243,7 @@ describe('修复批① 双读保守 min', () => {
   it('快照面 lastReadAt 双相：读失败期 null→读成功后非 null 且 ISO 可解析（healthz 投影前置件·从闸 staleness 输入面）', async () => {
     let fail = true;
     const handle = startPowerMonitor({
+      queryWakeEventsXml: NO_WAKE,
       readPower: async () => {
         if (fail) throw new Error('mock read fail');
         return reading(55, false);
@@ -267,6 +274,7 @@ describe('修复批③ notify 失败计数+降级告警', () => {
     let fail = true;
     let flips = 0;
     const handle = startPowerMonitor({
+      queryWakeEventsXml: NO_WAKE,
       readPower: async () => {
         // 29,29,55,55,29,29... 序列：防抖确认窗走满后每 2 tick 翻一次闸
         // （soft 置位/recover 交替），反复制造闸事件驱动 notify 反复投递。
@@ -298,6 +306,7 @@ describe('修复批③ notify 失败计数+降级告警', () => {
   it('notify 失败不计入 readFailures（两计数器独立）', async () => {
     let flips = 0;
     const handle = startPowerMonitor({
+      queryWakeEventsXml: NO_WAKE,
       readPower: async () => {
         flips += 1;
         return flips <= 1 ? reading(29, false) : reading(29, false);

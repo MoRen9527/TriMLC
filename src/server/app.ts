@@ -873,6 +873,9 @@ interface ConnectionManagerOptions {
   queueSize?: () => number;
   getPendingForReplay?: (connectionId: string, limit?: number) => ReplayEventItem[];
   applyReplayResponse?: (connectionId: string, res: ReplayResponse, events: ReplayEventItem[]) => void;
+  /** F 件 §六增量（批件 2026-10-17）：心跳 payload 追加字段投影（如 recentWake）。
+   * 每次 checkHealth 求值（晚绑定）；返回 undefined=零追加。 */
+  extraHeartbeat?: () => Record<string, unknown> | undefined;
 }
 
 // ── ConnectionManager (2.5: local state + persistence + backoff) ──
@@ -895,6 +898,7 @@ class ConnectionManager {
   private _queueSize: () => number;
   private _getPendingForReplay: (connectionId: string, limit?: number) => ReplayEventItem[];
   private _applyReplayResponse: (connectionId: string, res: ReplayResponse, events: ReplayEventItem[]) => void;
+  private _extraHeartbeat?: () => Record<string, unknown> | undefined;
   private recoveryCallback: (() => void) | null = null;
   private stateFile: string | null = null; // 2.5: persistence file path
 
@@ -910,6 +914,7 @@ class ConnectionManager {
     this._queueSize = opts.queueSize ?? (() => 0);
     this._getPendingForReplay = opts.getPendingForReplay ?? (() => []);
     this._applyReplayResponse = opts.applyReplayResponse ?? (() => {});
+    this._extraHeartbeat = opts.extraHeartbeat;
     this.startTime = Date.now();
     if (this.state === 'local') {
       console.log('[trilc:conn] running in local mode — TriMC not configured');
@@ -970,6 +975,7 @@ class ConnectionManager {
         queueSize: this._queueSize(),
         uptimeSeconds: Math.floor((Date.now() - this.startTime) / 1000),
         agentCoreVersion: this.version,
+        ...this._extraHeartbeat?.(),
       });
       if (ok) {
         this.recordSuccess();
@@ -1133,6 +1139,9 @@ function postHeartbeat(baseUrl: string, hb: {
   queueSize: number;
   uptimeSeconds: number;
   agentCoreVersion: string;
+  /** F 件 §六增量（批件 2026-10-17）：追加字段经 extraHeartbeat 并入（如 recentWake）。
+   * TriMC 端宽松解析零 schema 拒（2026-10-17 TriMMC app.ts L601-637 勘实）。 */
+  [key: string]: unknown;
 }, timeoutMs = 5000): Promise<boolean> {
   return new Promise((resolve) => {
     const urlObj = new URL('/internal/v1/heartbeat', baseUrl);
@@ -1397,12 +1406,30 @@ export function createTriLCApp(env: TriLCEnv) {
   // （daemon 生命周期对齐；server 未起不 spawn 检测进程）。
   let powerMonitor: PowerMonitorHandle | null = null;
   const isPowerGateHard = (): boolean => (powerMonitor?.snapshot().gate ?? 'none') === 'hard';
-  const powerHealthz = (): { percent: number | null; percentRaw: number | null; percentCim: number | null; acOnline: boolean | null; gate: string; batteryPresent: boolean; readFailures: number; notifyFailures: number; lastReadAt: string | null } | null => {
+  const powerHealthz = (): { percent: number | null; percentRaw: number | null; percentCim: number | null; acOnline: boolean | null; gate: string; batteryPresent: boolean; readFailures: number; notifyFailures: number; lastReadAt: string | null; lastWakeSeenAt: string | null; lastHandledWakeAt: string | null; wakePollFailures: number; lastWakeReport: { wakeAt: string; sleepAt: string | null; durationMs: number | null } | null } | null => {
     const p = powerMonitor?.snapshot();
     // 修复批②③：双读可见化（percentRaw/percentCim）+notifyFailures 计数投影。
     // 10-14 前置件：lastReadAt 投影（CTO 二期稿 §2.2 裁据3）——TriRLC 8711 从闸
     // staleness 传染防御的输入面（snapshot 有、healthz 落投影漏的可见性缺口本体）。
-    return p ? { percent: p.percent, percentRaw: p.percentRaw, percentCim: p.percentCim, acOnline: p.acOnline, gate: p.gate, batteryPresent: p.batteryPresent, readFailures: p.readFailures, notifyFailures: p.notifyFailures, lastReadAt: p.lastReadAt } : null;
+    // F 件 b1 v2：wake 观测面三字段+lastWakeReport 段投影（healthz 可见=观测面自身可观测）。
+    return p ? { percent: p.percent, percentRaw: p.percentRaw, percentCim: p.percentCim, acOnline: p.acOnline, gate: p.gate, batteryPresent: p.batteryPresent, readFailures: p.readFailures, notifyFailures: p.notifyFailures, lastReadAt: p.lastReadAt, lastWakeSeenAt: p.lastWakeSeenAt, lastHandledWakeAt: p.lastHandledWakeAt, wakePollFailures: p.wakePollFailures, lastWakeReport: p.lastWakeReport } : null;
+  };
+  // ── F 件 §六增量（批件 2026-10-17 双席会签）：心跳面 recentWake 字段投影 ──
+  // 数据源=b1 v2 lastWakeReport（最近一次达标报告的睡眠段·不过期保留）。消费链=
+  // TriMC 收单（宽松解析不拒·TriMMC app.ts L601-637 勘实）→store 存储面+b2 判据
+  // 读取面=E1-4 料包 v2（sg 值席施工·候勘钉批）——本件只立数据源，半闭环如实
+  // （TriMMC recordNodeHeartbeat 现役仅存 nodeId+state，字段暂不落 store）。
+  const recentWakeHeartbeatFields = (): Record<string, unknown> | undefined => {
+    const w = powerMonitor?.snapshot().lastWakeReport;
+    if (!w) return undefined;
+    return {
+      recentWake: {
+        sleepAt: w.sleepAt,
+        wakeAt: w.wakeAt,
+        durationMinutes:
+          w.durationMs == null ? null : Math.round((w.durationMs / 60000) * 10) / 10,
+      },
+    };
   };
 
   // ── Minimal Cron Engine ──
@@ -1449,6 +1476,8 @@ export function createTriLCApp(env: TriLCEnv) {
     queueSize: () => eventQueue.getQueueSize(),
     getPendingForReplay: (cid, limit) => eventQueue.getPendingForReplay(cid, limit),
     applyReplayResponse: (cid, res, events) => eventQueue.applyReplayResponse(cid, res, events),
+    // F 件 §六增量：recentWake 心跳字段投影（晚绑定——powerMonitor start() 后才有值）
+    extraHeartbeat: recentWakeHeartbeatFields,
   });
   connMgr.enablePersistence(env.dataDir);
 
