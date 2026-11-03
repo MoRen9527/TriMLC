@@ -77,6 +77,18 @@ const RUN_COLUMNS = `
   plan_skill_version, score_skill_version, close_skill_version, created_at, updated_at
 `;
 
+// S4 closing-gate rejections (§2.7 拒翻转失败明细落卷). Additive-only table —
+// the S1 frozen schemas above are untouched. One row per refused flip.
+const CREATE_GATE_REJECTIONS_SQL = `
+CREATE TABLE IF NOT EXISTS fade_gate_rejections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  gate TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  detail TEXT,
+  created_at TEXT NOT NULL
+)`;
+
 interface FadeRunRow {
   run_id: string;
   idempotency_key: string;
@@ -141,6 +153,36 @@ function rowToTransition(row: FadeTransitionRow): FadeTransitionRecord {
   };
 }
 
+/** S4 closing-gate rejection卷面 row (§2.7 refused flip, detail landed). */
+export interface FadeGateRejectionRecord {
+  id: number;
+  runId: string;
+  gate: string;
+  reason: string;
+  detail: string | null;
+  createdAt: string;
+}
+
+interface FadeGateRejectionRow {
+  id: number | bigint;
+  run_id: string;
+  gate: string;
+  reason: string;
+  detail: string | null;
+  created_at: string;
+}
+
+function rowToGateRejection(row: FadeGateRejectionRow): FadeGateRejectionRecord {
+  return {
+    id: Number(row.id),
+    runId: row.run_id,
+    gate: row.gate,
+    reason: row.reason,
+    detail: row.detail,
+    createdAt: row.created_at,
+  };
+}
+
 export interface FadeStore {
   db: DatabaseSync;
   /** §8.1 L431 register, dedupe, anchor the run identity: same idempotency
@@ -162,6 +204,9 @@ export interface FadeStore {
   recoverRun(runId: string, reason?: string): FadeRunRecord;
   /** §8.3 L481 checkpoint contract. */
   setCheckpoint(runId: string, checkpoint: string | null): FadeRunRecord;
+  /** S4 §2.7 refused-flip ledger: land a closing-gate rejection detail. */
+  recordGateRejection(runId: string, gate: string, reason: string, detail?: string): void;
+  listGateRejections(runId: string): FadeGateRejectionRecord[];
   close(): void;
 }
 
@@ -172,6 +217,7 @@ export function createFadeStore(dbPath: string): FadeStore {
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec(CREATE_RUNS_SQL);
   db.exec(CREATE_TRANSITIONS_SQL);
+  db.exec(CREATE_GATE_REJECTIONS_SQL);
 
   const nowIso = () => new Date().toISOString();
 
@@ -198,6 +244,12 @@ export function createFadeStore(dbPath: string): FadeStore {
   );
   const listTransitionsStmt = db.prepare(
     "SELECT seq, run_id, from_state, to_state, actor, reason, created_at FROM fade_run_transitions WHERE run_id = ? ORDER BY seq",
+  );
+  const insertGateRejectionStmt = db.prepare(
+    "INSERT INTO fade_gate_rejections (run_id, gate, reason, detail, created_at) VALUES (?, ?, ?, ?, ?)",
+  );
+  const listGateRejectionsStmt = db.prepare(
+    "SELECT id, run_id, gate, reason, detail, created_at FROM fade_gate_rejections WHERE run_id = ? ORDER BY id",
   );
 
   function getRun(runId: string): FadeRunRecord | undefined {
@@ -331,6 +383,11 @@ export function createFadeStore(dbPath: string): FadeStore {
     advanceRun,
     recoverRun,
     setCheckpoint,
+    recordGateRejection: (runId, gate, reason, detail) => {
+      insertGateRejectionStmt.run(runId, gate, reason, detail ?? null, nowIso());
+    },
+    listGateRejections: (runId: string) =>
+      (listGateRejectionsStmt.all(runId) as unknown as FadeGateRejectionRow[]).map(rowToGateRejection),
     close: () => db.close(),
   };
 }
