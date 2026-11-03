@@ -118,6 +118,11 @@ import { createMinimalCronEngine, type MinimalCronEngine } from '../cron/service
 import { createUpdateCheckHandler, startUpdateCheckLoop } from '../update/update-check.js';
 // FADE-ASSESS-005 分身门禁：AgentTool 合同员工 spawn 前置校验 roster.active。
 import { setRosterGate, setOnSpawnGateDenied } from '../tools/agent-tool.js';
+import {
+  openFadeStoreAndRecover,
+  summarizeBootRecovery,
+  type FadeBootRecoveryResult,
+} from '../fade/recovery.js';
 
 // Cached roster of available sub-agents (built at daemon startup, injected
 // into system prompts so the model knows by name which agents it can invoke
@@ -1574,10 +1579,28 @@ export function createTriLCApp(env: TriLCEnv) {
   });
   let updateCheckLoop: { stop: () => void } | null = null;
 
+  // ── FADE-011 S2: boot 恢复链状态（start() 时扫 fade.db 独立键空间；
+  // 句柄随 app 生命周期·stop() 关停闭合）──
+  let fadeBoot: FadeBootRecoveryResult | null = null;
+
   return {
     async start(): Promise<void> {
       daemonStartTime = Date.now();
       connMgr.startHealthCheckLoop();
+
+      // FADE-011 S2: boot 序挂恢复链——扫 fade.db 未完 run 按 spec §8.1 批认
+      // 正身款恢复（幂等段续跑=状态不动·EXECUTING 回退 CLOSING 收口核残证）。
+      // fail-soft：恢复面故障不阻 daemon 启动（独立键空间·排期单 §六 回滚=
+      // revert+删 fade.db 即回旧行为），故障显式落日志禁静默。
+      try {
+        fadeBoot = openFadeStoreAndRecover(env.dataDir, {
+          log: (message) => console.log(`[trilc] fade: ${message}`),
+        });
+        const summary = summarizeBootRecovery(fadeBoot.report);
+        if (summary) console.log(`[trilc] fade boot recovery: ${summary}`);
+      } catch (err) {
+        console.warn('[trilc] fade boot recovery failed (continuing):', (err as Error).message);
+      }
 
       // FADE-ASSESS-005 分身门禁注入：AgentTool spawn 合同岗时读运行态名册
       // （CompanyInitState.employees 为在岗真源，roster.status 语义见 staffing.ts）。
@@ -4747,11 +4770,26 @@ export function createTriLCApp(env: TriLCEnv) {
       return env.port;
     },
 
+    /** FADE-011 S2: boot 恢复链报告（start() 后可用；未 start 或 fail-soft 捕获时为 null）。 */
+    get fadeBootRecovery() {
+      return fadeBoot?.report ?? null;
+    },
+
+    /** FADE-011 S2: fade 独立键空间句柄（S5 驱动面附着点；同上可为 null）。 */
+    get fadeStore() {
+      return fadeBoot?.store ?? null;
+    },
+
     get connectionState(): ConnectionState {
       return connMgr.currentState;
     },
 
     async stop(): Promise<void> {
+      // FADE-011 S2: 关停即闭 fade 独立键空间句柄（fail-soft·不阻其余关停序）
+      try {
+        fadeBoot?.store.close();
+      } catch { /* already closed */ }
+      fadeBoot = null;
       cronEngine.stop();
       powerMonitor?.stop();
       powerMonitor = null;
