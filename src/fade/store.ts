@@ -89,6 +89,31 @@ CREATE TABLE IF NOT EXISTS fade_gate_rejections (
   created_at TEXT NOT NULL
 )`;
 
+// event-watch 立窗（spec §8.6 触发探测落地形态·daemon 侧）——指纹状态与审计
+// 落 fade.db（独立键空间内·additive-only·S1 frozen schemas untouched）。
+// state=每 watch 名单行（持久指纹=已处理事件记忆化——含 failed 态记忆化，
+// 同指纹零自动重试零重驱·A 件③裁语）；audit=事件面追加行（skip-same 无事件
+// 不落·防审计膨胀）。
+const CREATE_WATCH_STATE_SQL = `
+CREATE TABLE IF NOT EXISTS fade_watch_state (
+  name TEXT PRIMARY KEY,
+  fingerprint TEXT NOT NULL,
+  run_id TEXT,
+  status TEXT NOT NULL CHECK (status IN ('baseline','ok','failed')),
+  updated_at TEXT NOT NULL
+)`;
+
+const CREATE_WATCH_AUDIT_SQL = `
+CREATE TABLE IF NOT EXISTS fade_watch_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  event TEXT NOT NULL,
+  run_id TEXT,
+  detail TEXT,
+  created_at TEXT NOT NULL
+)`;
+
 interface FadeRunRow {
   run_id: string;
   idempotency_key: string;
@@ -207,7 +232,34 @@ export interface FadeStore {
   /** S4 §2.7 refused-flip ledger: land a closing-gate rejection detail. */
   recordGateRejection(runId: string, gate: string, reason: string, detail?: string): void;
   listGateRejections(runId: string): FadeGateRejectionRecord[];
+  /** event-watch 立窗（§8.6 daemon 侧）：watch 指纹状态（每名单行持久化）。 */
+  getWatchState(name: string): FadeWatchStateRecord | undefined;
+  setWatchState(name: string, fingerprint: string, runId: string | null, status: "baseline" | "ok" | "failed"): void;
+  /** event-watch 审计（事件面追加；skip-same 无事件不落）。 */
+  recordWatchAudit(row: Omit<FadeWatchAuditRecord, "id" | "createdAt">): void;
+  listWatchAudit(name?: string, limit?: number): FadeWatchAuditRecord[];
   close(): void;
+}
+
+/** event-watch 状态行（持久指纹=已处理事件记忆化·含 failed 记忆化）。 */
+export interface FadeWatchStateRecord {
+  name: string;
+  fingerprint: string;
+  runId: string | null;
+  status: "baseline" | "ok" | "failed";
+  updatedAt: string;
+}
+
+/** event-watch 审计行（事件面：baseline/triggered/debounce-pending/failed/
+ * skip-rate-limit/skip-failed-remembered）。 */
+export interface FadeWatchAuditRecord {
+  id: number;
+  name: string;
+  fingerprint: string;
+  event: string;
+  runId: string | null;
+  detail: string | null;
+  createdAt: string;
 }
 
 export function createFadeStore(dbPath: string): FadeStore {
@@ -218,6 +270,8 @@ export function createFadeStore(dbPath: string): FadeStore {
   db.exec(CREATE_RUNS_SQL);
   db.exec(CREATE_TRANSITIONS_SQL);
   db.exec(CREATE_GATE_REJECTIONS_SQL);
+  db.exec(CREATE_WATCH_STATE_SQL);
+  db.exec(CREATE_WATCH_AUDIT_SQL);
 
   const nowIso = () => new Date().toISOString();
 
@@ -250,6 +304,17 @@ export function createFadeStore(dbPath: string): FadeStore {
   );
   const listGateRejectionsStmt = db.prepare(
     "SELECT id, run_id, gate, reason, detail, created_at FROM fade_gate_rejections WHERE run_id = ? ORDER BY id",
+  );
+  const getWatchStateStmt = db.prepare(
+    "SELECT name, fingerprint, run_id, status, updated_at FROM fade_watch_state WHERE name = ?",
+  );
+  const upsertWatchStateStmt = db.prepare(
+    `INSERT INTO fade_watch_state (name, fingerprint, run_id, status, updated_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET fingerprint = excluded.fingerprint, run_id = excluded.run_id,
+     status = excluded.status, updated_at = excluded.updated_at`,
+  );
+  const insertWatchAuditStmt = db.prepare(
+    "INSERT INTO fade_watch_audit (name, fingerprint, event, run_id, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)",
   );
 
   function getRun(runId: string): FadeRunRecord | undefined {
@@ -388,6 +453,43 @@ export function createFadeStore(dbPath: string): FadeStore {
     },
     listGateRejections: (runId: string) =>
       (listGateRejectionsStmt.all(runId) as unknown as FadeGateRejectionRow[]).map(rowToGateRejection),
+    getWatchState: (name: string) => {
+      const row = getWatchStateStmt.get(name) as unknown as
+        | { name: string; fingerprint: string; run_id: string | null; status: string; updated_at: string }
+        | undefined;
+      if (!row) return undefined;
+      return {
+        name: row.name,
+        fingerprint: row.fingerprint,
+        runId: row.run_id,
+        status: row.status as "baseline" | "ok" | "failed",
+        updatedAt: row.updated_at,
+      };
+    },
+    setWatchState: (name, fingerprint, runId, status) => {
+      upsertWatchStateStmt.run(name, fingerprint, runId, status, nowIso());
+    },
+    recordWatchAudit: (row) => {
+      insertWatchAuditStmt.run(row.name, row.fingerprint, row.event, row.runId ?? null, row.detail ?? null, nowIso());
+    },
+    listWatchAudit: (name?: string, limit = 100) => {
+      const rows = name
+        ? (db.prepare(
+            "SELECT id, name, fingerprint, event, run_id, detail, created_at FROM fade_watch_audit WHERE name = ? ORDER BY id DESC LIMIT ?",
+          ).all(name, limit) as unknown as Array<{ id: number | bigint; name: string; fingerprint: string; event: string; run_id: string | null; detail: string | null; created_at: string }>)
+        : (db.prepare(
+            "SELECT id, name, fingerprint, event, run_id, detail, created_at FROM fade_watch_audit ORDER BY id DESC LIMIT ?",
+          ).all(limit) as unknown as Array<{ id: number | bigint; name: string; fingerprint: string; event: string; run_id: string | null; detail: string | null; created_at: string }>);
+      return rows.map((r) => ({
+        id: Number(r.id),
+        name: r.name,
+        fingerprint: r.fingerprint,
+        event: r.event,
+        runId: r.run_id,
+        detail: r.detail,
+        createdAt: r.created_at,
+      }));
+    },
     close: () => db.close(),
   };
 }

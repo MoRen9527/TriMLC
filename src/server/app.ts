@@ -131,6 +131,14 @@ import {
   type FadeRunTreeMeta,
 } from '../fade/driver.js';
 import type { FadeRunInput } from '../fade/types.js';
+// FADE-011 event-watch 立窗（spec §8.6 定时巡检链·daemon 侧）：指纹扫描 →
+// 防抖 → 速率护栏 → createAndDriveRun 幂等触发（零旁路）；env 三键缺省全关
+// = fail-closed（零 watch 配置零扫描零触发）。
+import {
+  resolveFadeWatchConfigFromEnv,
+  runWatchTick,
+  type FadeWatchConfig,
+} from '../fade/watch.js';
 
 // Cached roster of available sub-agents (built at daemon startup, injected
 // into system prompts so the model knows by name which agents it can invoke
@@ -1591,6 +1599,12 @@ export function createTriLCApp(env: TriLCEnv) {
   // 句柄随 app 生命周期·stop() 关停闭合）──
   let fadeBoot: FadeBootRecoveryResult | null = null;
 
+  // ── FADE-011 event-watch 立窗：定时巡检链调度器状态（§8.6 interval 语义；
+  // timer 随 app 生命周期·stop() 清理）。tick 串行防重入：驱动链收口门上界
+  // 30s/run 可能超过 intervalMs——in-flight 时跳过本拍（不排队不堆叠）。
+  let fadeWatch: { config: FadeWatchConfig; timer: NodeJS.Timeout } | null = null;
+  let fadeWatchTickInFlight = false;
+
   return {
     async start(): Promise<void> {
       daemonStartTime = Date.now();
@@ -1631,6 +1645,36 @@ export function createTriLCApp(env: TriLCEnv) {
           .catch((err) => {
             console.warn('[trilc] fade driver resume failed (continuing):', (err as Error).message);
           });
+      }
+
+      // FADE-011 event-watch 立窗（§8.6 定时巡检链）：env 三键显式接入才启
+      // （fail-closed——缺省全关零扫描零触发，禁自行发明业务映射·brief §一.3）。
+      // fail-soft：watch 面故障不阻 daemon 启动（独立键空间·回滚=revert+删
+      // fade.db 即回旧行为），故障显式落日志禁静默。
+      const watchConfig = resolveFadeWatchConfigFromEnv(process.env);
+      if (watchConfig && fadeBoot) {
+        const watchStore = fadeBoot.store;
+        const tick = async (): Promise<void> => {
+          if (fadeWatchTickInFlight) return; // 串行防重入（驱动链上界 > interval 时跳拍不堆叠）
+          fadeWatchTickInFlight = true;
+          try {
+            await runWatchTick(watchStore, watchConfig, {
+              log: (message) => console.log(`[trilc] fade watch: ${message}`),
+            });
+          } catch (err) {
+            console.warn('[trilc] fade watch tick failed (continuing):', (err as Error).message);
+          } finally {
+            fadeWatchTickInFlight = false;
+          }
+        };
+        const timer = setInterval(() => { void tick(); }, watchConfig.intervalMs);
+        timer.unref(); // 不拖住事件循环（测试/退出流程挂起同族·contract-resolver 先例）
+        fadeWatch = { config: watchConfig, timer };
+        console.log(`[trilc] fade watch enabled: name=${watchConfig.name} dirs=${watchConfig.dirs.length} interval=${watchConfig.intervalMs}ms debounce/rate=module constants`);
+      } else if (watchConfig && !fadeBoot) {
+        console.warn('[trilc] fade watch disabled: config present but fade store unavailable (fail-closed)');
+      } else {
+        console.log('[trilc] fade watch disabled (fail-closed: no TRILC_FADE_WATCH_* config)');
       }
 
       // FADE-ASSESS-005 分身门禁注入：AgentTool spawn 合同岗时读运行态名册
@@ -1971,6 +2015,30 @@ export function createTriLCApp(env: TriLCEnv) {
             res.writeHead(500, { 'content-type': 'application/json' });
             res.end(JSON.stringify({ error: 'fade_run_failed', message: (err as Error).message }));
           }
+          return;
+        }
+
+        // ── GET /internal/v1/fade/watch（event-watch 探针只读面；X-Internal-Token
+        // 门内同族）── 载荷=enabled/config/持久指纹状态行/审计最近行——重启后
+        // 加载面断言读数源（§二.3·fail-closed 面 enabled:false + 零真 run 显式标注）。
+        if (req.url === '/internal/v1/fade/watch' && req.method === 'GET') {
+          const auditRows = fadeBoot
+            ? fadeBoot.store.listWatchAudit(undefined, 20)
+            : [];
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({
+            object: 'fade.watch',
+            enabled: fadeWatch !== null,
+            config: fadeWatch
+              ? { name: fadeWatch.config.name, dirs: fadeWatch.config.dirs, intervalMs: fadeWatch.config.intervalMs, treeRoot: fadeWatch.config.treeRoot }
+              : null,
+            storeAvailable: fadeBoot !== null,
+            watchState: fadeBoot
+              ? fadeBoot.store.db.prepare('SELECT name, fingerprint, run_id, status, updated_at FROM fade_watch_state').all()
+              : [],
+            audit: auditRows,
+            note: 'probe is read-only; fail-closed disabled = no scan, no trigger',
+          }));
           return;
         }
 
@@ -4869,6 +4937,13 @@ export function createTriLCApp(env: TriLCEnv) {
     },
 
     async stop(): Promise<void> {
+      // FADE-011 event-watch: 关停即清巡检调度器（先停拍再闭 store·顺序防
+      // timer 在 store 关闭后触发的 use-after-close）
+      if (fadeWatch) {
+        clearInterval(fadeWatch.timer);
+        fadeWatch = null;
+      }
+      fadeWatchTickInFlight = false;
       // FADE-011 S2: 关停即闭 fade 独立键空间句柄（fail-soft·不阻其余关停序）
       try {
         fadeBoot?.store.close();
