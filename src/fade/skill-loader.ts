@@ -318,10 +318,34 @@ export interface FadeCloseOutput {
   decided_at: string;
 }
 
-/** Convenience: load both rehearsal-proven skills (score + close). */
-export function loadFade011Skills(skillsRoot: string): { score: FadeSkillDefinition; close: FadeSkillDefinition } {
+// S5.1 — tri-fade011-plan v1.0 consumer type (立法正身 TriSkill 1fa8a94).
+// freeze.items 空=程序化驱动面零五件卷冻结（如实·schema array 无元素时不校验）。
+export interface FadePlanOutput {
+  schema: string; // "tri-fade011-plan/v1.0"
+  run_id: string;
+  freeze: { items: { path: string; sha256_raw: string; sha256_lf: string }[]; volume_hash: string; frozen_by: string; frozen_at: string };
+  collab: { charter_with: string; tree_with: string; owner_avoid: string };
+  skill_reachability: { run_registry_pointer: boolean; agents_md_mapping: boolean; unknown_skill_log: unknown[] };
+  release: { released_by: string; released_at: string; dce_input: string };
+}
+
+/** Convenience: load all three FADE-011 skills (score + close + plan).
+ * S5.1: plan joins the single loading channel — a missing SKILL.md throws
+ * NOT_FOUND at cache construction (Unknown skill = FAIL-EXPECTED, 禁替身). */
+export function loadFade011Skills(skillsRoot: string): {
+  score: FadeSkillDefinition;
+  close: FadeSkillDefinition;
+  plan: FadeSkillDefinition;
+} {
   return {
     score: loadFadeSkill(skillsRoot, "tri-fade011-score"),
     close: loadFadeSkill(skillsRoot, "tri-fade011-close"),
+    plan: loadFadeSkill(skillsRoot, "tri-fade011-plan"),
   };
+}
+
+/** TriSkill AGENTS.md path — skill-reachability channel ② (立法检查项:
+ * 映射行在位). skillsRoot is …/TriSkill/skills/engineering → ../../AGENTS.md. */
+export function resolveTriSkillAgentsMd(skillsRoot: string): string {
+  return resolve(skillsRoot, "..", "..", "AGENTS.md");
 }

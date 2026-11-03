@@ -13,19 +13,21 @@
 //     gates (score/close 真身装载·校验失败=段失败不静默).
 //   - S2 consumption: setCheckpoint per segment (boot sweep resume 消费面).
 // Boundary notes (如实):
-//   - Plan Skill structured output has no tri-fade011-plan SKILL.md yet (彩排
-//     only created score/close — run-registry L39-40): the plan segment emits a
-//     plan document + compliant report without a skill-schema gate (候件·
-//     worker injection point reserved).
+//   - S5.1: plan segment wires the tri-fade011-plan v1.0 real skill (立法
+//     TriSkill 1fa8a94·B 件转正承接) — same loading/validation channel as
+//     score/close, plus the立法 skill-reachability check (两通道: run 登记
+//     卷三包指针 + TriSkill AGENTS.md 映射行). Unknown skill / reachability
+//     FAIL = segment fails visibly, no stand-in fallback (禁替身).
 //   - Segment workers default to programmatic MVP form (compliant node reports
 //     + synthetic skill outputs). Real per-segment work plugs in via opts.workers.
 //   - R2.1: the heaviest IO in the chain is the closing gate (S4 upper bound
 //     30s); segment work is in-process ms-level — no additional driver timeout.
 //     R4.3: all timestamps new Date().toISOString() in-process (no spawn date).
+import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { finalizeWithGate, type ClosingGateOptions } from "./closing-gate.js";
-import { loadFade011Skills, parseSkillOutput, resolveTriSkillSkillsRoot, type FadeSkillDefinition } from "./skill-loader.js";
+import { loadFade011Skills, parseSkillOutput, resolveTriSkillSkillsRoot, resolveTriSkillAgentsMd, type FadeSkillDefinition } from "./skill-loader.js";
 import { isTerminal } from "./state-machine.js";
 import {
   TERMINAL_STATES,
@@ -55,6 +57,9 @@ export interface FadeDriverOptions extends Omit<ClosingGateOptions, "reportsDir"
   // FadeRunTreeMeta 解析（默认 join(treeDir,"reports")）·驱动链零硬编码路径。
   /** Per-segment worker overrides (tests / future real segment work). */
   workers?: Partial<Record<DriverWorkerKey, SegmentWorker>>;
+  /** Skills root override (tests / non-default deployments) — fed through
+   * resolveTriSkillSkillsRoot; default resolves the dev workspace layout. */
+  skillsRoot?: string;
   /** Inter-segment delay (kill-window tests); 0 = full speed (R2.1 note). */
   segmentDelayMs?: number;
   /** Segment-advance observer (polling/log/test assertions). */
@@ -145,7 +150,7 @@ FADE-011 S5 driver（排期单 cd1a13f6c §四 S5·spec §1.1 十段链）。
 ${body ?? ""}`;
 }
 
-function defaultWorkers(): Record<DriverWorkerKey, SegmentWorker> {
+function defaultWorkers(skillsRoot?: string): Record<DriverWorkerKey, SegmentWorker> {
   return {
     qualify: (ctx) => {
       if (!existsSync(ctx.treeDir)) {
@@ -154,11 +159,66 @@ function defaultWorkers(): Record<DriverWorkerKey, SegmentWorker> {
       mkdirSync(ctx.reportsDir, { recursive: true });
       ctx.writeReport("node-qualify.md", "Qualify 段报告（程序化）", "资格判定：treeDir 在位可写。");
     },
-    plan: (ctx) => {
-      // Plan Skill structured output 候件（无 tri-fade011-plan SKILL.md）——
-      // plan 段 MVP=计划文档落树+合规报告；schema 门候 plan skill 立法。
-      writeFileSync(ctx.treeAbsPath("plan.md"), `# Run Plan（${ctx.runId}）\n\n- 程序化计划产物（FADE-011 S5 driver MVP）\n- treeDir: ${ctx.treeDir}\n`, "utf-8");
-      ctx.writeReport("node-plan.md", "Plan 段报告（程序化）", "plan.md 落树（Plan Skill schema 门候件·worker 注入点在案）。");
+    plan: async (ctx) => {
+      // S5.1 真身接线（B 件立法 tri-fade011-plan v1.0·TriSkill 1fa8a94）：
+      // loadFade011Skills 三包通道装载（NOT_FOUND 冒泡 = Unknown skill
+      // FAIL-EXPECTED·禁替身——本 worker 不回退 MVP 逻辑，段失败可见）。
+      const def = await loadPlanSkill(skillsRoot);
+      // 可达性确认两通道（立法检查项·daemon 以代码实现同款不变量）：
+      // ①run 登记卷三包指针（plan/score/close SKILL.md 在位）②TriSkill
+      // AGENTS.md 映射行在位。两通道齐=确认 PASS 方可放行（Plan→DCE 闸）。
+      const root = resolveTriSkillSkillsRoot(skillsRoot);
+      const registryPointer =
+        existsSync(def.skillFilePath) &&
+        existsSync(join(root, "tri-fade011-score", "SKILL.md")) &&
+        existsSync(join(root, "tri-fade011-close", "SKILL.md"));
+      const agentsMdPath = resolveTriSkillAgentsMd(root);
+      const agentsMapping =
+        existsSync(agentsMdPath) && readFileSync(agentsMdPath, "utf-8").includes("tri-fade011-plan");
+      if (!registryPointer || !agentsMapping) {
+        throw new FadeDriverError(
+          "SKILL_REACHABILITY_FAIL",
+          `skill 可达性确认 FAIL（禁替身·如实 FAIL-EXPECTED）: run_registry_pointer=${registryPointer} agents_md_mapping=${agentsMapping} (${agentsMdPath})`,
+        );
+      }
+      // 方案卷落树 + DCE 输入声明（立法放行条件④：DCE 输入=方案卷 sha256
+      // 内容 hash——代码实现同款不变量，非 git 对象 hash）。
+      const planMd = `# Run Plan（${ctx.runId}）\n\n- 程序化计划产物（FADE-011 S5.1 driver·plan skill 正身接线）\n- treeDir: ${ctx.treeDir}\n`;
+      writeFileSync(ctx.treeAbsPath("plan.md"), planMd, "utf-8");
+      const dceInput = createHash("sha256").update(planMd, "utf8").digest("hex");
+      const output = {
+        schema: "tri-fade011-plan/v1.0",
+        run_id: ctx.runId,
+        freeze: {
+          items: [], // 程序化驱动面零五件卷冻结（如实空·席位协同面不入 daemon）
+          volume_hash: "",
+          frozen_by: "fade-driver (programmatic; five-item freeze is outside daemon scope)",
+          frozen_at: nowIso(),
+        },
+        collab: {
+          charter_with: "daemon-automated (no inter-seat charter co-cast)",
+          tree_with: "daemon-automated (no inter-seat tree协定)",
+          owner_avoid: "daemon-automated (no reviewer seats in daemon chain)",
+        },
+        skill_reachability: {
+          run_registry_pointer: registryPointer,
+          agents_md_mapping: agentsMapping,
+          unknown_skill_log: [], // 本 run 无 Unknown skill 事件（如实空）
+        },
+        release: {
+          released_by: "fade-driver",
+          released_at: nowIso(),
+          dce_input: dceInput,
+        },
+      };
+      const parsed = parseSkillOutput(def, JSON.stringify(output));
+      if (!parsed.ok) {
+        throw new FadeDriverError("PLAN_OUTPUT_INVALID", `plan skill 输出校验拒: ${JSON.stringify(parsed.errors)}`);
+      }
+      writeFileSync(join(ctx.reportsDir, "plan-output.json"), JSON.stringify(output, null, 2), "utf-8");
+      // run 登记卷三包指针记档（通道①载体=node-plan.md 报告 body·审计面）。
+      ctx.writeReport("node-plan.md", "Plan 段报告（程序化·真身接线 S5.1）",
+        `三包指针（run 登记卷）: ${def.skillFilePath} | ${join(root, "tri-fade011-score", "SKILL.md")} | ${join(root, "tri-fade011-close", "SKILL.md")}\nAGENTS.md 映射行: ${agentsMdPath} 在位\nDCE 输入 hash: ${dceInput}\nplan-output.json 结构门过（schema ${def.outputSchemaName}·S3 装载器逐键校验）。`);
     },
     dce: (ctx) => {
       // DCE = the non-idempotent segment (S1 §8.1 L445). MVP product: a file
@@ -180,7 +240,7 @@ function defaultWorkers(): Record<DriverWorkerKey, SegmentWorker> {
       ctx.writeReport("node-verify.md", "Verify 段报告（程序化）", "DCE 产物读回校验通过。");
     },
     score: async (ctx) => {
-      const def = await loadScoreSkill();
+      const def = await loadScoreSkill(skillsRoot);
       const output = {
         schema: "tri-fade011-score/v1.0",
         run_id: ctx.runId,
@@ -204,7 +264,7 @@ function defaultWorkers(): Record<DriverWorkerKey, SegmentWorker> {
       ctx.writeReport("node-score.md", "Score 段报告（程序化）", "score skill 输出结构校验过（S3 装载器）。");
     },
     close: async (ctx) => {
-      const def = await loadCloseSkill();
+      const def = await loadCloseSkill(skillsRoot);
       const output = {
         schema: "tri-fade011-close/v1.0",
         run_id: ctx.runId,
@@ -226,21 +286,26 @@ function defaultWorkers(): Record<DriverWorkerKey, SegmentWorker> {
 }
 
 // Skill definitions load lazily per call (single loading channel — S3).
-let skillCache: { score: FadeSkillDefinition; close: FadeSkillDefinition } | null = null;
+// S5.1: three-package cache (score/close/plan) + root override plumbing —
+// cache invalidates when the resolved root changes (opts.skillsRoot tests).
+let skillCache: { score: FadeSkillDefinition; close: FadeSkillDefinition; plan: FadeSkillDefinition } | null = null;
 let skillCacheRoot = "";
-async function loadScoreSkill(): Promise<FadeSkillDefinition> {
-  if (!skillCache || skillCacheRoot !== resolveTriSkillSkillsRoot()) {
-    skillCache = loadFade011Skills(resolveTriSkillSkillsRoot());
-    skillCacheRoot = resolveTriSkillSkillsRoot();
+function ensureSkills(rootOverride?: string): { score: FadeSkillDefinition; close: FadeSkillDefinition; plan: FadeSkillDefinition } {
+  const root = resolveTriSkillSkillsRoot(rootOverride);
+  if (!skillCache || skillCacheRoot !== root) {
+    skillCache = loadFade011Skills(root);
+    skillCacheRoot = root;
   }
-  return skillCache.score;
+  return skillCache;
 }
-async function loadCloseSkill(): Promise<FadeSkillDefinition> {
-  if (!skillCache || skillCacheRoot !== resolveTriSkillSkillsRoot()) {
-    skillCache = loadFade011Skills(resolveTriSkillSkillsRoot());
-    skillCacheRoot = resolveTriSkillSkillsRoot();
-  }
-  return skillCache.close;
+async function loadScoreSkill(rootOverride?: string): Promise<FadeSkillDefinition> {
+  return ensureSkills(rootOverride).score;
+}
+async function loadCloseSkill(rootOverride?: string): Promise<FadeSkillDefinition> {
+  return ensureSkills(rootOverride).close;
+}
+async function loadPlanSkill(rootOverride?: string): Promise<FadeSkillDefinition> {
+  return ensureSkills(rootOverride).plan;
 }
 
 /** Drive one run from its CURRENT state to a terminal state (or stop at
@@ -264,7 +329,7 @@ export async function driveRun(
   // 统一建树：resume 场景可能从链中段进入（前段 worker 未跑）——reports/
   // 是所有 worker 写报告/技能输出的共享前提，入口建一次（幂等 recursive）。
   mkdirSync(reportsDir, { recursive: true });
-  const workers = { ...defaultWorkers(), ...opts.workers };
+  const workers = { ...defaultWorkers(opts.skillsRoot), ...opts.workers };
 
   const ctx: SegmentWorkerContext = {
     runId,

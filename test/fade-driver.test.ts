@@ -14,18 +14,20 @@
 // acceptance gate lives in fade-kill-drive.test.ts (排期单 §五 BOD 照立).
 import { describe, test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync, readFileSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createFadeStore, type FadeStore } from "../src/fade/store.js";
 import {
   driveRun, createAndDriveRun, resumeUnfinishedRuns, metaFromCheckpoint,
-  type FadeRunTreeMeta, type SegmentWorkerContext,
+  FadeDriverError, type FadeRunTreeMeta, type SegmentWorkerContext,
 } from "../src/fade/driver.js";
 import { runClosingGate, resolveTmvRepoRoot } from "../src/fade/closing-gate.js";
+import { FadeSkillLoadError } from "../src/fade/skill-loader.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // R2.1: heaviest IO per drive = the closing gate (S4 upper bound 30s) — this
@@ -121,6 +123,22 @@ describe("fade driver (in-process)", () => {
     assert.ok(existsSync(join(treeDir, "artifacts", "dce-output.md")), "dce artifact missing");
     assert.ok(existsSync(join(reportsDir, "score-output.json")), "score-output.json missing");
     assert.ok(existsSync(join(reportsDir, "close-output.json")), "close-output.json missing");
+
+    // S5.1 plan 真身接线实锚: plan-output.json schema 门过 + DCE 输入 hash
+    // 对表（立法放行条件④: DCE 输入=方案卷 sha256 内容 hash）+ 可达性两通道
+    assert.ok(existsSync(join(reportsDir, "plan-output.json")), "plan-output.json missing (S5.1 plan skill gate)");
+    const planOut = JSON.parse(readFileSync(join(reportsDir, "plan-output.json"), "utf-8")) as {
+      schema: string; release: { dce_input: string }; skill_reachability: { run_registry_pointer: boolean; agents_md_mapping: boolean };
+    };
+    assert.equal(planOut.schema, "tri-fade011-plan/v1.0");
+    const planMdOnDisk = readFileSync(join(treeDir, "plan.md"), "utf-8");
+    assert.equal(
+      planOut.release.dce_input,
+      createHash("sha256").update(planMdOnDisk, "utf8").digest("hex"),
+      "release.dce_input must equal sha256(plan.md content) — 立法放行条件④",
+    );
+    assert.equal(planOut.skill_reachability.run_registry_pointer, true);
+    assert.equal(planOut.skill_reachability.agents_md_mapping, true);
 
     // 编排层门复跑（验收门③形态）: real checker against the run tree — RC=0
     const gate = await runClosingGate({ reportsDir });
@@ -246,6 +264,93 @@ describe("fade driver (in-process)", () => {
     assert.equal(second.created, false, "same idempotency key must dedupe");
     assert.equal(second.result.finalState, "APPROVED", "existing terminal run returned as-is");
   }, SUITE_GATE_BUDGET_MS);
+
+  // ── S5.1 plan 真身接线·负路径（brief 门禁 2·禁替身）─────────────────────
+  // fake root 形: <tmp>/skills/engineering — resolveTriSkillAgentsMd(root)
+  // = <tmp>/AGENTS.md（隔离在 tmp 内·禁触真实 TriSkill）。
+
+  function makeFakeSkillsRoot(opts: { packages: string[]; agentsMdLine?: string | null }): string {
+    const base = mkdtempSync(join(tmpdir(), "trimlc-fade-skillroot-"));
+    dirs.push(base);
+    const root = join(base, "skills", "engineering");
+    const realRoot = resolve(REPO_ROOT, "..", "TriSkill", "skills", "engineering");
+    for (const pkg of opts.packages) {
+      cpSync(join(realRoot, pkg), join(root, pkg), { recursive: true });
+    }
+    if (opts.agentsMdLine !== null) {
+      // channel ②载体在位（默认含 plan 行；传 null = 不写文件·通道缺位）
+      writeFileSync(
+        join(base, "AGENTS.md"),
+        `# TriSkill skill 映射表\n\n| tri-fade011-plan | ${opts.agentsMdLine ?? "FADE Plan 段"} | FADE ④ |\n`,
+        "utf-8",
+      );
+    }
+    return root;
+  }
+
+  test("S5.1 negative a: plan package missing → NOT_FOUND FAIL-EXPECTED, run stuck at PLANNING, zero stand-in products", async () => {
+    const { store, dbPath, treeDir, reportsDir, meta } = freshCtx();
+    const fakeRoot = makeFakeSkillsRoot({ packages: ["tri-fade011-score", "tri-fade011-close"] });
+
+    await assert.rejects(
+      createAndDriveRun(store, { ...makeRunInput("drv-plan-missing"), meta }, { skillsRoot: fakeRoot }),
+      (err: unknown) => err instanceof FadeSkillLoadError && err.code === "NOT_FOUND",
+      "missing plan SKILL.md must throw NOT_FOUND (Unknown skill = FAIL-EXPECTED)",
+    );
+    // 段失败可见: run 停在 PLANNING（worker throw 于 advance 前）
+    assert.equal(runRow(dbPath, "drv-plan-missing").state, "PLANNING");
+    // 禁替身: 零替身产物（无 plan.md / plan-output.json / node-plan.md）
+    assert.ok(!existsSync(join(treeDir, "plan.md")), "no stand-in plan.md may exist");
+    assert.ok(!existsSync(join(reportsDir, "plan-output.json")), "no stand-in plan-output.json may exist");
+    const files = existsSync(reportsDir) ? readdirSync(reportsDir) : [];
+    assert.ok(!files.includes("node-plan.md"), "no stand-in node-plan.md may exist");
+  });
+
+  test("S5.1 negative b: AGENTS.md mapping line missing → SKILL_REACHABILITY_FAIL (禁替身·如实 FAIL-EXPECTED)", async () => {
+    const { store, dbPath, treeDir, reportsDir, meta } = freshCtx();
+    const fakeRoot = makeFakeSkillsRoot({ packages: ["tri-fade011-score", "tri-fade011-close", "tri-fade011-plan"], agentsMdLine: null });
+
+    await assert.rejects(
+      createAndDriveRun(store, { ...makeRunInput("drv-plan-unreachable"), meta }, { skillsRoot: fakeRoot }),
+      (err: unknown) => {
+        assert.ok(err instanceof FadeDriverError, `expected FadeDriverError, got ${String(err)}`);
+        assert.equal(err.code, "SKILL_REACHABILITY_FAIL");
+        assert.match(err.message, /agents_md_mapping=false/);
+        return true;
+      },
+      "missing AGENTS.md mapping line must fail the reachability check visibly",
+    );
+    assert.equal(runRow(dbPath, "drv-plan-unreachable").state, "PLANNING");
+    assert.ok(!existsSync(join(reportsDir, "plan-output.json")), "reachability FAIL must refuse to release plan products");
+  });
+
+  test("S5.1 negative c: poisoned plan schema (extra required key) → PLAN_OUTPUT_INVALID, gate is no rubber stamp", async () => {
+    const { store, dbPath, treeDir, reportsDir, meta } = freshCtx();
+    const fakeRoot = makeFakeSkillsRoot({ packages: ["tri-fade011-score", "tri-fade011-close", "tri-fade011-plan"] });
+    // 注入额外必填键 → worker output 缺该键 → 结构门必须拒（证明非橡皮图章）
+    const skillMdPath = join(fakeRoot, "tri-fade011-plan", "SKILL.md");
+    const poisoned = readFileSync(skillMdPath, "utf-8").replace(
+      '"release": {',
+      '"extra_required_gate": "<must-fail-missing-key>",\n  "release": {',
+    );
+    assert.notEqual(poisoned, readFileSync(skillMdPath, "utf-8"), "poison injection must take effect");
+    writeFileSync(skillMdPath, poisoned, "utf-8");
+
+    await assert.rejects(
+      createAndDriveRun(store, { ...makeRunInput("drv-plan-poison"), meta }, { skillsRoot: fakeRoot }),
+      (err: unknown) => {
+        assert.ok(err instanceof FadeDriverError, `expected FadeDriverError, got ${String(err)}`);
+        assert.equal(err.code, "PLAN_OUTPUT_INVALID");
+        assert.match(err.message, /extra_required_gate/);
+        return true;
+      },
+      "a poisoned plan schema must make the structural gate refuse the segment",
+    );
+    assert.equal(runRow(dbPath, "drv-plan-poison").state, "PLANNING");
+    // 拒后不落盘: plan.md 已落树（结构门前的方案卷）·plan-output.json 不在
+    assert.ok(existsSync(join(treeDir, "plan.md")), "plan.md lands before the gate");
+    assert.ok(!existsSync(join(reportsDir, "plan-output.json")), "refused output must not be persisted");
+  });
 
   after(async () => {
     for (const s of stores) { try { s.close(); } catch { /* already closed */ } }
