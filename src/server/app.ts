@@ -123,6 +123,14 @@ import {
   summarizeBootRecovery,
   type FadeBootRecoveryResult,
 } from '../fade/recovery.js';
+// FADE-011 S5: 十段链全链驱动面（排期单 cd1a13f6c §四 S5）——boot sweep 后续跑
+// 挂点 + /internal/v1/fade/runs 触发端点；收口翻转只经 finalizeWithGate（唯一通道）。
+import {
+  createAndDriveRun,
+  resumeUnfinishedRuns,
+  type FadeRunTreeMeta,
+} from '../fade/driver.js';
+import type { FadeRunInput } from '../fade/types.js';
 
 // Cached roster of available sub-agents (built at daemon startup, injected
 // into system prompts so the model knows by name which agents it can invoke
@@ -1602,6 +1610,29 @@ export function createTriLCApp(env: TriLCEnv) {
         console.warn('[trilc] fade boot recovery failed (continuing):', (err as Error).message);
       }
 
+      // FADE-011 S5: boot sweep 后挂驱动续跑——未完 run 从 checkpoint 读回树元
+      // 数据（driver 每段写·S1 既有恢复语义字段）续驱至终态（§8.1 恢复语义的
+      // 自然延伸）。fire-and-forget：驱动含收口门子进程（S4 上界 30s/run）不阻
+      // start() 返回；per-run fail-soft，摘要落日志禁静默。
+      if (fadeBoot) {
+        const resumeStore = fadeBoot.store;
+        void resumeUnfinishedRuns(resumeStore)
+          .then((summary) => {
+            if (summary.attempted > 0) {
+              console.log(`[trilc] fade driver resume: attempted=${summary.attempted} terminal=${summary.terminalReached.length} stopped=${summary.stopped.length} failed=${summary.failed.length}`);
+              for (const f of summary.failed) {
+                console.warn(`[trilc] fade driver resume failed run=${f.runId}: ${f.error}`);
+              }
+              for (const s of summary.stopped) {
+                console.warn(`[trilc] fade driver resume stopped run=${s.runId} state=${s.state} detail=${s.detail}`);
+              }
+            }
+          })
+          .catch((err) => {
+            console.warn('[trilc] fade driver resume failed (continuing):', (err as Error).message);
+          });
+      }
+
       // FADE-ASSESS-005 分身门禁注入：AgentTool spawn 合同岗时读运行态名册
       // （CompanyInitState.employees 为在岗真源，roster.status 语义见 staffing.ts）。
       setRosterGate(async (roleId) => {
@@ -1887,6 +1918,59 @@ export function createTriLCApp(env: TriLCEnv) {
           console.log(`[trilc:keys] config cache cleared via internal API (hadCache=${result.hadCache}, removed=${result.removedFiles.length})`);
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ object: 'config.cache-cleared', ...result }));
+          return;
+        }
+
+        // ── FADE-011 S5：十段链全链驱动触发端点（排期单 §四 S5·验收门①「daemon
+        // 触发新 run → 十段全自动通（零人工干预）→ 终态 APPROVED」）──
+        // body {runId, treeDir[, idempotencyKey]} → createAndDriveRun 同步驱动至
+        // 终态返回（段工作毫秒级·收口门上界 S4 DEFAULT_GATE_TIMEOUT_MS=30s）。
+        // 门拒 = gated:false 是合法业务结果（200 带 finalState，run 停 FINALIZING
+        // 可见·S4 rejection ledger 有行），仅基础设施故障才 5xx。
+        // 树元数据贯通：treeDir 来自请求体·驱动链零硬编码路径（D-24）。
+        if (req.url === '/internal/v1/fade/runs' && req.method === 'POST') {
+          if (!fadeBoot) {
+            res.writeHead(503, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'fade_store_unavailable' }));
+            return;
+          }
+          const fadeStore = fadeBoot.store;
+          try {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) chunks.push(chunk);
+            const raw = Buffer.concat(chunks).toString('utf-8');
+            let parsed: { runId?: unknown; idempotencyKey?: unknown; treeDir?: unknown } = {};
+            if (raw.length > 0) parsed = JSON.parse(raw) as typeof parsed;
+            if (typeof parsed.runId !== 'string' || parsed.runId.length === 0) {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'runId_required' }));
+              return;
+            }
+            if (typeof parsed.treeDir !== 'string' || parsed.treeDir.length === 0) {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'treeDir_required' }));
+              return;
+            }
+            const input: FadeRunInput = {
+              runId: parsed.runId,
+              idempotencyKey: typeof parsed.idempotencyKey === 'string' && parsed.idempotencyKey.length > 0
+                ? parsed.idempotencyKey
+                : `internal-fade-run:${parsed.runId}`,
+              profile: 'runtime-owned-durable',
+              homeDomain: 'M-plane-local',
+              writeAuthority: 'daemon:trmlc',
+              authorityEpoch: 1,
+              version: 'fade011-s5-driver',
+            };
+            const meta: FadeRunTreeMeta = { treeDir: parsed.treeDir };
+            const { created, result } = await createAndDriveRun(fadeStore, { ...input, meta });
+            console.log(`[trilc] fade driver run ${parsed.runId}: created=${created} finalState=${result.finalState} gated=${result.gated}`);
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ object: 'fade.run', created, ...result }));
+          } catch (err) {
+            res.writeHead(500, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'fade_run_failed', message: (err as Error).message }));
+          }
           return;
         }
 
