@@ -152,7 +152,12 @@ function resolveVersion(): string {
 
 export function readEnv(): TriLCEnv {
   const nodeId = process.env.TRILC_NODE_ID ?? `${hostname()}-${process.pid}`;
-  const dataDir = process.env.TRILC_DATA_DIR ?? `${process.env.LOCALAPPDATA ?? process.env.HOME ?? '/tmp'}/trilc`;
+  // FADE-011 S3 (CTO ruling, escalated in the S2 report): empty/whitespace
+  // TRILC_DATA_DIR must fall to the default — `??` keeps "" and empty dataDir
+  // previously produced drive-root files (template `${dataDir}/fade.db`) or
+  // cwd-relative ones (join(dataDir, …)).
+  const dataDirRaw = process.env.TRILC_DATA_DIR?.trim();
+  const dataDir = dataDirRaw ? dataDirRaw : `${process.env.LOCALAPPDATA ?? process.env.HOME ?? '/tmp'}/trilc`;
   const projectRoot = process.env.TRILC_PROJECT_ROOT ?? process.cwd();
   const debugMode = process.env.TRILC_DEBUG === '1';
   if (debugMode) {
