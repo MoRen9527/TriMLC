@@ -36,6 +36,43 @@ export const FADE_WATCH_RATE_WINDOW_MS = 60_000;
  * 超限显式跳过落审计+日志，brief §一.5）。 */
 export const FADE_WATCH_RATE_MAX = 2;
 
+// ── treeRoot 跨周模板（{week} 占位符·P3 尾增强小单 2026-11-04）──────────────
+// Law anchors:
+//   - 跨周滚动语义裁决（CTO 2026-11-04T12:12:20 验收裁语 + 派工 brief
+//     fade011-ew-week-template）：env 静态 TREE_ROOT 指固定周树 → 换周后新 run
+//     错落旧周树 = 记录面脏。模板化根治：{week} 占位符在 run 创建时展开 ISO 周
+//     （2026-W45 形·与 operating-records 周目录命名同构）——展开时点=run 创建
+//     时（本文件触发段内·非 boot 时：boot 时展开则换周不重启仍错周）。
+//   - 向后兼容：无占位符静态值行为零变化（现役部署形照跑）。
+//   - fail-closed：展开失败/非法占位符（唯一合法占位符={week}，如 {weekx}）
+//     = run 不创建 + audit failed 显面（禁静默落根路径）——走触发段现役 failed
+//     通道（A 件③裁语同族语义：显面+指纹记忆化零重试风暴）。
+
+/** ISO 8601 周字符串（`2026-W45` 形）：周一为每周首日；W01 = 含当年第一个
+ * 周四的那周。取日期本地分量（daemon 本机时区域·与 operating-records 周目录
+ * 命名同构锚 2026-11-04 周三 → 2026-W45 实测对表）。 */
+export function isoWeekString(d: Date): string {
+  const t = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const dayNum = (t.getDay() + 6) % 7; // Mon=0..Sun=6
+  t.setDate(t.getDate() - dayNum + 3); // 本周四（ISO 周归属锚）
+  const isoYear = t.getFullYear();
+  t.setDate(t.getDate() - 3); // 本周一
+  const jan4 = new Date(isoYear, 0, 4);
+  const week1Mon = new Date(isoYear, 0, 4 - ((jan4.getDay() + 6) % 7));
+  const week = 1 + Math.round((t.getTime() - week1Mon.getTime()) / (7 * 86_400_000));
+  return `${isoYear}-W${String(week).padStart(2, "0")}`;
+}
+
+/** treeRoot 模板展开（run 创建时调用·非 boot）：唯一合法占位符 `{week}` →
+ * ISO 周串；无占位符静态值原样返回（向后兼容恒等）；未知占位符（如
+ * `{weekx}`）throw——调用方（触发段）catch 走 failed 通道 fail-closed。 */
+export function expandTreeRootTemplate(treeRoot: string, now: Date = new Date()): string {
+  return treeRoot.replace(/\{([^}]*)\}/g, (whole, key: string) => {
+    if (key === "week") return isoWeekString(now);
+    throw new Error(`unknown treeRoot placeholder ${whole} (only {week} is legal)`);
+  });
+}
+
 // ── 配置面（env 三键·缺省全关）──────────────────────────────────────────────
 
 export interface FadeWatchConfig {
@@ -207,9 +244,10 @@ export async function runWatchTick(
   const pending = pendingByWatch.get(config.name);
   if (!pending || pending.fp !== fp) {
     pendingByWatch.set(config.name, { fp, since: now });
-    if (!pending) {
-      store.recordWatchAudit({ name: config.name, fingerprint: fp, event: "debounce-pending", runId: null, detail: null });
-    }
+    // 审计链完整可溯（CTO 扩面裁 2026-11-04T12:18:37·SDE 勘定 OBS1 根因）：
+    // 首见或窗内跳变均落 debounce-pending 行——跳变后直触发时审计链有前置行；
+    // skip-same 防膨胀语义不动（同指纹重扫零行）。
+    store.recordWatchAudit({ name: config.name, fingerprint: fp, event: "debounce-pending", runId: null, detail: null });
     return { event: "debounce-pending", fingerprint: fp };
   }
   if (now - pending.since < debounceMs) {
@@ -226,6 +264,23 @@ export async function runWatchTick(
     return { event: "skip-rate-limit", fingerprint: fp, runId, detail };
   }
 
+  // treeRoot 模板展开（run 创建时·非 boot 时——换周不重启亦落对周·fail-closed：
+  // 展开失败/非法占位符 = run 不创建走 failed 通道显面，禁静默落根路径）。
+  // 时钟域分离：日历展开走真实墙钟（缺省 new Date()·R4.3 进程内正形）——
+  // opts.now 是防抖相对时钟（测试注入小值 ms 域），两域不可互替（互换=测试域
+  // 展开出假周·实锚⑪红案勘定 2026-11-04）；换周模拟由 expandTreeRootTemplate
+  // 的 Date 参数注入覆盖（单元级·gate1）。
+  let treeDir: string;
+  try {
+    treeDir = join(expandTreeRootTemplate(config.treeRoot), runId);
+  } catch (err) {
+    const detail = `treeRoot template expand failed: ${(err as Error).message}`;
+    store.setWatchState(config.name, fp, null, "failed");
+    store.recordWatchAudit({ name: config.name, fingerprint: fp, event: "failed", runId, detail });
+    log(`tick FAILED name=${config.name} run=${runId}: ${detail}`);
+    return { event: "failed", fingerprint: fp, runId, detail };
+  }
+
   try {
     const { created, result } = await createAndDriveRun(
       store,
@@ -237,7 +292,7 @@ export async function runWatchTick(
         writeAuthority: "daemon:trmlc",
         authorityEpoch: 1,
         version: "fade011-ew-watch",
-        meta: { treeDir: join(config.treeRoot, runId) },
+        meta: { treeDir },
       },
     );
     // 门拒 = gated:false 合法业务结果（run 已建停 FINALIZING 可见）——状态记

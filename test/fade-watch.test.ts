@@ -25,6 +25,8 @@ import {
   resolveFadeWatchConfigFromEnv,
   runWatchTick,
   computeFingerprint,
+  expandTreeRootTemplate,
+  isoWeekString,
   resetDebounceForTest,
   resetRateWindowForTest,
   FADE_WATCH_RATE_MAX,
@@ -149,8 +151,29 @@ describe("fade event-watch (in-process)", () => {
     assert.equal(fadeRunCount(store), 1, "storm must coalesce to exactly one run");
     // 触发的是最后指纹（v2）——runId 从最终指纹派生
     assert.equal(store.getRun(t.runId!)!.state, "APPROVED");
-    // debounce-pending 审计恰 1 行（首见落·重置不落·防膨胀）
-    assert.equal(auditEvents(store).filter((e) => e === "debounce-pending").length, 1);
+    // debounce-pending 审计恰 2 行（v1 首见 1+v2 跳变 1·审计链完整可溯——CTO
+    // 扩面裁 2026-11-04：首见或跳变均落行；skip-same 仍零行防膨胀）
+    assert.equal(auditEvents(store).filter((e) => e === "debounce-pending").length, 2);
+  });
+
+  // ── 实锚⑫: 跳变落行（CTO 扩面加件 gate）——首见→跳变→触发三行链断言，
+  //    审计链完整可溯（SDE 勘定 OBS1 根因：非首见跳变不落行→审计链缺前置）。
+  test("audit chain: first-seen and window jump both land debounce-pending rows (full chain traceable)", async () => {
+    resetDebounceForTest(); resetRateWindowForTest();
+    const { store, watchDir, config } = freshCtx();
+    await runWatchTick(store, config, { now: 1_000 }); // baseline（零 pending 行）
+
+    writeFileSync(join(watchDir, "input.txt"), "jump-v1", "utf8");
+    assert.equal((await runWatchTick(store, config, { now: 2_000 })).event, "debounce-pending");
+    writeFileSync(join(watchDir, "input.txt"), "jump-v2", "utf8");
+    assert.equal((await runWatchTick(store, config, { now: 3_000 })).event, "debounce-pending");
+    const t = await runWatchTick(store, config, { now: 4_000, debounceMs: 0 });
+    assert.equal(t.event, "triggered");
+
+    // 三行链：baseline → pending(v1 首见) → pending(v2 跳变) → triggered
+    assert.deepEqual(auditEvents(store), ["baseline", "debounce-pending", "debounce-pending", "triggered"]);
+    // 触发的是跳变后最终指纹（v2）——审计链前置行可溯至触发行
+    assert.equal(store.getRun(t.runId!)!.state, "APPROVED");
   });
 
   test("skip-same idempotency: stable fingerprint re-scan = zero new runs, zero audit rows", async () => {
@@ -300,4 +323,92 @@ describe("fade event-watch (in-process)", () => {
     // 确定性：同态重扫同值
     assert.equal(computeFingerprint([repoDir]), fp3);
   });
+
+  // ── 实锚⑨: {week} 模板展开（P3 尾增强·跨周滚动语义裁决 2026-11-04）────────
+  // gate1: {week} → ISO 周（W45 形·operating-records 同构）+ 换周模拟（注入
+  //        时钟·展开值随周变）+ ISO 边界（周日/周一换周点 + 跨年 W53/W01）。
+  // gate2: 向后兼容——无占位符静态值恒等（行为零变化·现役部署形照跑）。
+  test("week template: {week} expands at injected clock; ISO boundaries; static values pass through", () => {
+    const D = (y: number, m: number, d: number) => new Date(y, m, d);
+    // 同构锚：2026-11-04（周三）→ 2026-W45（现役周目录同形）
+    assert.equal(isoWeekString(D(2026, 10, 4)), "2026-W45");
+    // 换周点：周日属本周，周一翻新周
+    assert.equal(isoWeekString(D(2026, 10, 8)), "2026-W45");
+    assert.equal(isoWeekString(D(2026, 10, 9)), "2026-W46");
+    // ISO 跨年边界：2026 长年（53 周）+ 元旦归上年 W53
+    assert.equal(isoWeekString(D(2026, 11, 28)), "2026-W53");
+    assert.equal(isoWeekString(D(2027, 0, 1)), "2026-W53");
+    assert.equal(isoWeekString(D(2027, 0, 4)), "2027-W01");
+    assert.equal(isoWeekString(D(2026, 0, 1)), "2026-W01");
+
+    // 展开函数：{week} 注入时钟展开（同构锚实测）+ 换周模拟随周变
+    const root = "D:/rec/{week}/trees/fade011-ew-runs";
+    assert.equal(expandTreeRootTemplate(root, D(2026, 10, 4)), "D:/rec/2026-W45/trees/fade011-ew-runs");
+    assert.equal(expandTreeRootTemplate(root, D(2026, 10, 9)), "D:/rec/2026-W46/trees/fade011-ew-runs");
+    assert.equal(expandTreeRootTemplate("{week}", D(2026, 11, 28)), "2026-W53");
+
+    // gate2 向后兼容：无占位符静态值恒等（含现役部署形 …/2026-W45/trees/…）
+    const staticRoot = "D:/rec/2026-W45/trees/fade011-ew-runs";
+    assert.equal(expandTreeRootTemplate(staticRoot, D(2026, 10, 4)), staticRoot);
+    assert.equal(expandTreeRootTemplate(staticRoot, D(2027, 0, 1)), staticRoot);
+  });
+
+  // ── 实锚⑩: fail-closed 非法占位符（gate3）——run 不创建 + audit failed 显面
+  //    + failed 记忆化（同指纹零重试·走触发段现役 failed 通道）。
+  test("fail-closed: unknown placeholder = run NOT created + failed audit + memorized skip", async () => {
+    resetDebounceForTest(); resetRateWindowForTest();
+    const { store, watchDir, config } = freshCtx();
+    await runWatchTick(store, config, { now: 1_000 }); // baseline（合法静态树根）
+    writeFileSync(join(watchDir, "input.txt"), "bad-template", "utf8");
+    await runWatchTick(store, config, { now: 2_000 }); // debounce-pending
+
+    // 非法占位符树根（{weekx}——唯一合法占位符={week}）
+    const badRoot = join(treeRootBad(), "{weekx}");
+    const badConfig: FadeWatchConfig = { ...config, treeRoot: badRoot };
+    const f = await runWatchTick(store, badConfig, { now: 3_000, debounceMs: 0 });
+    assert.equal(f.event, "failed");
+    assert.match(f.detail!, /treeRoot template expand failed:/);
+    assert.match(f.detail!, /\{weekx\}/);
+    // run 不创建（零新行·派生 runId 无 run 行——禁静默落根路径）
+    assert.equal(fadeRunCount(store), 0, "template expand failure must NOT create a run");
+    assert.ok(!store.getRun(f.runId!), "derived runId has no run row");
+    // audit failed 显面 + failed 记忆化
+    assert.ok(auditEvents(store).includes("failed"));
+    assert.equal(store.getWatchState(config.name)!.status, "failed");
+
+    // 同指纹下 tick → skip-failed-remembered（零自动重试零风暴）
+    const s = await runWatchTick(store, badConfig, { now: 4_000 });
+    assert.equal(s.event, "skip-failed-remembered");
+    assert.equal(fadeRunCount(store), 0);
+  });
+
+  // ── 实锚⑪: 模板化端到端——真全链触发后树落当前 ISO 周目录（对周·动态同值
+  //    断言不随时间漂移）。
+  test("end-to-end templated treeRoot: run tree lands under current ISO week dir", async () => {
+    resetDebounceForTest(); resetRateWindowForTest();
+    const { store, watchDir, treeRoot, config } = freshCtx();
+    await runWatchTick(store, config, { now: 1_000 }); // baseline
+    const templated: FadeWatchConfig = { ...config, treeRoot: join(treeRoot, "{week}", "trees", "ew") };
+
+    writeFileSync(join(watchDir, "input.txt"), "templated-payload", "utf8");
+    await runWatchTick(store, templated, { now: 2_000 }); // debounce-pending
+    const t = await runWatchTick(store, templated, { now: 3_000, debounceMs: 0 });
+    assert.equal(t.event, "triggered");
+    assert.equal(t.finalState, "APPROVED");
+    assert.equal(t.gated, true);
+
+    // 树落对周：<treeRoot>/<当前 ISO 周>/trees/ew/<runId>/reports/node-close.md
+    const weekDir = isoWeekString(new Date());
+    assert.ok(
+      existsSync(join(treeRoot, weekDir, "trees", "ew", t.runId!, "reports", "node-close.md")),
+      `tree products must land under the ISO-week dir (${weekDir})`,
+    );
+    // 旧形路径（无周层）零落盘——展开真发生在 run 创建时
+    assert.ok(!existsSync(join(treeRoot, t.runId!)), "no legacy root-level run tree");
+  });
 });
+
+/** fail-closed 用例专用树根目录（独立于 freshCtx 树根·隔离断言面）。 */
+function treeRootBad(): string {
+  return mkdtempSync(join(tmpdir(), "trimlc-fade-watch-badroot-"));
+}
