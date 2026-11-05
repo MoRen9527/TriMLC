@@ -11,6 +11,7 @@ import {
   stopTimer,
   runMissedJobs,
   enqueueRun,
+  onTimerTick,
   type CronTimerDeps,
   type CronTimerState,
 } from "./timer.js";
@@ -41,6 +42,10 @@ export interface CronService {
    *  家族缺陷信号（healthz 假绿防御，2026-10-11 晨 8713 形实证）。 */
   readonly nextRunAt: string | null;
   readonly isRunning: boolean;
+  /** E1-5 C 面（CTO 定谳 dcfbbb142）：wake 恢复立即 tick——due 检查+stale
+   *  reclaim 一轮（不等 armTimer 节拍）。未启动=静默跳过；异常=日志不抛
+   *  （回调面不炸 powerMonitor tick）。 */
+  wakeRecoveryTick(): Promise<void>;
 }
 
 export interface CronServiceDeps {
@@ -204,6 +209,20 @@ export function createCronService(deps: CronServiceDeps): CronService {
     getRecentExecutionLogs(limit?: number): Promise<ExecutionLogEntry[]> {
       const logs = store.getRecentExecutionLogs(limit);
       return Promise.resolve(logs);
+    },
+
+    async wakeRecoveryTick(): Promise<void> {
+      // E1-5 C 面（CTO 定谳 dcfbbb142·COS 2026-11-05 16:35 裁乙连办件）：宿主
+      // wake 恢复回调入口——立即一轮 onTimerTick（sweepStaleRunning+due 派发+
+      // 重臂）。未启动=静默跳过（cron 未上线时 wake 面无意义）；异常=日志不抛
+      // （powerMonitor tick 的 onWakeRecovery 调用面另有 catch，双兜）。
+      if (!state.started) return;
+      try {
+        await onTimerTick(state, timerDeps);
+        console.log(`${LOG_PREFIX} wake recovery tick done (E1-5 C-face)`);
+      } catch (e) {
+        console.warn(`${LOG_PREFIX} wake recovery tick failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
     },
   };
 }

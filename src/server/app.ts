@@ -4886,8 +4886,14 @@ export function createTriLCApp(env: TriLCEnv) {
           }
         },
         log: (line) => console.log(`[trilc:power] ${line}`),
+        // E1-5 C 面（CTO 定谳 dcfbbb142）：wake 恢复立即 tick——Modern Standby
+        // 冻结段积压 job 醒后即时补跑（due 检查+stale reclaim 一轮）·不等
+        // armTimer 节拍到岗。未启动/异常由 service.wakeRecoveryTick 双兜。
+        onWakeRecovery: () => {
+          void cronEngine.wakeRecoveryTick().catch(() => {});
+        },
       });
-      console.log("[trilc:power] power gate monitor started (60s interval, LG-069)");
+      console.log("[trilc:power] power gate monitor started (60s interval, LG-069, E1-5 A/C build)");
 
       // ── ACT2: Update check loop ──
       updateCheckLoop = startUpdateCheckLoop({

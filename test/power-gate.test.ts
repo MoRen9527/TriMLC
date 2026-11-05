@@ -425,3 +425,197 @@ describe('LG-069 cron 硬闸单点（runMissedJobs 面）', () => {
     assert.ok(next > Date.now());
   });
 });
+
+// ── E. E1-5 A 面（CTO 定谳 dcfbbb142·COS 2026-11-05 16:35 裁乙连办件）：
+//    LG-069 前置告警档——<50% 且未接电→告警值守面恰一次/电量段（非闸不动
+//    派发）；重臂=接电或回升 >=55（5 缓冲防抖）。──
+
+const ADVISORY_TITLE = '[LG-069 前置档]';
+
+describe('E1-5 A 面 前置告警档', () => {
+  const advAlerts = (alerts: Array<{ title: string }>) =>
+    alerts.filter((a) => a.title.includes(ADVISORY_TITLE));
+
+  it('<50% 未接电 → 前置档告警恰一次；持续 DC 持警不重复', async () => {
+    const alerts: Array<{ level: string; seats: string[]; title: string }> = [];
+    const handle = startPowerMonitor({
+      queryWakeEventsXml: NO_WAKE,
+      readPower: async () => reading(45, false),
+      notify: (p) => alerts.push({ level: p.level, seats: [...p.seats], title: p.title }),
+      log: () => {},
+      intervalMs: 5,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 120));
+      const hits = advAlerts(alerts);
+      assert.equal(hits.length, 1, '恰一次');
+      assert.ok(hits[0].seats.join(',').includes('bod'), '值守面含 bod');
+      assert.equal(hits[0].level, 'normal', '前置档=normal（非 urgent·闸语义不变）');
+      await new Promise((r) => setTimeout(r, 60));
+      assert.equal(advAlerts(alerts).length, 1, '持续 DC 持警不重复');
+      // 非闸语义：45% DC 在 advisory 档但高于软闸 30——gate 保持 none。
+      assert.equal(handle.snapshot().gate, 'none', '告警非闸：gate 不翻');
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it('接电重臂 → 断电再 <50% 可再警', async () => {
+    const alerts: Array<{ title: string }> = [];
+    let ac = false; // 状态切换驱动（B 族 fail 布尔同形·消 tick 竞态）
+    const handle = startPowerMonitor({
+      queryWakeEventsXml: NO_WAKE,
+      readPower: async () => reading(45, ac),
+      notify: (p) => alerts.push({ title: p.title }),
+      log: () => {},
+      intervalMs: 5,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 60)); // DC 45 → 警
+      assert.equal(advAlerts(alerts).length, 1);
+      ac = true; // 接电 → 重臂
+      await new Promise((r) => setTimeout(r, 30));
+      assert.equal(advAlerts(alerts).length, 1, '接电重臂不告警');
+      ac = false; // 断电再 <50% → 再警
+      await new Promise((r) => setTimeout(r, 60));
+      assert.equal(advAlerts(alerts).length, 2, '重臂后再 <50% 可再警');
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it('回升 >=55 重臂（50-54 持警不重复）；接电态 <50% 零告警；无电池零告警', async () => {
+    const alerts: Array<{ title: string }> = [];
+    let mode: 'dc45' | 'dc52' | 'dc56' | 'ac45' | 'nobatt' = 'dc45';
+    const read = async (): Promise<PowerReading> => {
+      if (mode === 'dc45') return reading(45, false);
+      if (mode === 'dc52') return reading(52, false);
+      if (mode === 'dc56') return reading(56, false);
+      if (mode === 'ac45') return reading(45, true);
+      return reading(45, true, false);
+    };
+    const handle = startPowerMonitor({
+      queryWakeEventsXml: NO_WAKE,
+      readPower: read,
+      notify: (p) => alerts.push({ title: p.title }),
+      log: () => {},
+      intervalMs: 5,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 60)); // dc45 → 警 1
+      assert.equal(advAlerts(alerts).length, 1);
+      mode = 'dc52'; // 50-54 持警
+      await new Promise((r) => setTimeout(r, 40));
+      assert.equal(advAlerts(alerts).length, 1, '50-54 持警不重复');
+      mode = 'dc56'; // >=55 重臂
+      await new Promise((r) => setTimeout(r, 30));
+      mode = 'dc45'; // 再降 → 再警
+      await new Promise((r) => setTimeout(r, 60));
+      assert.equal(advAlerts(alerts).length, 2, '回升重臂后再 <50% 可再警');
+      mode = 'ac45'; // AC 45 → 零警
+      await new Promise((r) => setTimeout(r, 30));
+      assert.equal(advAlerts(alerts).length, 2, '接电态零告警');
+      mode = 'nobatt'; // 无电池 → 零警
+      await new Promise((r) => setTimeout(r, 30));
+      assert.equal(advAlerts(alerts).length, 2, '无电池零告警');
+    } finally {
+      handle.stop();
+    }
+  });
+});
+
+// ── F. E1-5 C 面（CTO 定谳 dcfbbb142）：wake 恢复回调——达标段报告→立即
+//    tick 回调恰一次携带段；短段/基线段零调；回调 throw 不炸 tick。──
+
+const ev = (id: number, systemTime: string, extra = ''): string =>
+  `<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>` +
+  `<System><Provider Name='Microsoft-Windows-Kernel-Power'/>` +
+  `<EventID>${id}</EventID><TimeCreated SystemTime='${systemTime}'/>` +
+  `<Channel>System</Channel></System>` +
+  `<EventData>${extra}</EventData></Event>`;
+const durData = (us: number) => `<Data Name='DurationInUs'>${us}</Data>`;
+const sixMinUs = 6 * 60 * 1_000_000;
+
+describe('E1-5 C 面 wake 恢复回调', () => {
+  it('达标段报告 → onWakeRecovery 恰一次携带段（首拍基线吸收零调）', async () => {
+    const baselineXml =
+      ev(507, '2026-11-05T06:00:00.0000000Z', durData(sixMinUs)) +
+      ev(506, '2026-11-05T05:54:00.0000000Z');
+    const freshXml =
+      ev(507, '2026-11-05T08:00:00.0000000Z', durData(sixMinUs)) +
+      ev(506, '2026-11-05T07:54:00.0000000Z');
+    const xmlSeq = [baselineXml, freshXml, freshXml];
+    let xi = 0;
+    const calls: Array<{ wakeAt: string }> = [];
+    const handle = startPowerMonitor({
+      queryWakeEventsXml: async () => xmlSeq[Math.min(xi, xmlSeq.length - 1)] ?? '',
+      readPower: async () => {
+        xi += 1;
+        return reading(80, true);
+      },
+      onWakeRecovery: (seg) => calls.push({ wakeAt: seg.wakeAt }),
+      log: () => {},
+      intervalMs: 5,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 150));
+      assert.equal(calls.length, 1, '首拍吸收+次拍报告=恰一次');
+      assert.equal(calls[0].wakeAt, '2026-11-05T08:00:00.0000000Z', '携带新段 wakeAt');
+      await new Promise((r) => setTimeout(r, 40));
+      assert.equal(calls.length, 1, '同段重读幂等零调');
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it('短段（<5min 阈值）→ 零回调', async () => {
+    const shortXml =
+      ev(507, '2026-11-05T08:00:00.0000000Z', durData(2 * 60 * 1_000_000)) +
+      ev(506, '2026-11-05T07:58:00.0000000Z');
+    let xi = 0;
+    const calls: number[] = [];
+    const handle = startPowerMonitor({
+      queryWakeEventsXml: async () => (xi === 0 ? '' : shortXml), // 首拍空=无段
+      readPower: async () => {
+        xi += 1;
+        return reading(80, true);
+      },
+      onWakeRecovery: () => calls.push(1),
+      log: () => {},
+      intervalMs: 5,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 120));
+      assert.equal(calls.length, 0, '浅睡段吸收零回调');
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it('回调 throw → tick 存活（读面照常推进）', async () => {
+    let xi = 0;
+    const wakeXml =
+      ev(507, '2026-11-05T08:00:00.0000000Z', durData(sixMinUs)) +
+      ev(506, '2026-11-05T07:54:00.0000000Z');
+    const handle = startPowerMonitor({
+      queryWakeEventsXml: async () => (xi === 0 ? '' : wakeXml),
+      readPower: async () => {
+        xi += 1;
+        return reading(80, true);
+      },
+      onWakeRecovery: () => {
+        throw new Error('mock recovery failure');
+      },
+      log: () => {},
+      intervalMs: 5,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 120));
+      const snap = handle.snapshot();
+      assert.ok(snap.lastReadAt != null, '回调炸后 tick 存活·读面推进');
+      assert.ok(!Number.isNaN(Date.parse(snap.lastReadAt!)), 'lastReadAt ISO 可解析');
+    } finally {
+      handle.stop();
+    }
+  });
+});

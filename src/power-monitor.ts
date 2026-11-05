@@ -36,6 +36,13 @@ export interface PowerGateConfig {
   softRecover: number; // >=34 解软闸（滞回）
   hardTrigger: number; // <20 触发硬闸
   hardRecover: number; // >=25 解硬闸（滞回；或接电即解）
+  /** E1-5 A 面（CTO 定谳 dcfbbb142）：前置告警档——<advisoryTrigger 且未接电
+   *  →升级告警值守面（一次/电量段·告警非闸：不动派发）。机理=Adaptive
+   *  Standby 冻结风险在中等电量即存在（硬闸 20% 挡不住）。 */
+  advisoryTrigger: number;
+  /** 前置档重臂滞回：接电即重臂；或电量回升 >=advisoryRecover 重臂（5 缓冲
+   *  防抖动）。 */
+  advisoryRecover: number;
 }
 
 export const DEFAULT_POWER_GATE_CONFIG: PowerGateConfig = {
@@ -43,6 +50,8 @@ export const DEFAULT_POWER_GATE_CONFIG: PowerGateConfig = {
   softRecover: 34,
   hardTrigger: 20,
   hardRecover: 25,
+  advisoryTrigger: 50,
+  advisoryRecover: 55,
 };
 
 export interface PowerGateState {
@@ -299,6 +308,10 @@ export interface PowerMonitorDeps {
    * 修复批③：async 化——throw/reject=投递失败（计 notifyFailures），静默吞
    * 病灶消除（BOD 定性「notify 静默吞」实锚=装配面 void fire-and-forget）。 */
   notify?: (payload: PowerNotifyPayload) => void | Promise<void>;
+  /** E1-5 C 面（CTO 定谳 dcfbbb142）：达标 wake 段报告时的恢复回调——宿主装配
+   *  面接 cron 立即 tick（due 检查+stale reclaim 一轮·不等 ≤60s 节拍）。回调
+   *  异常由 tick catch 面兜（不炸 tick 循环）。 */
+  onWakeRecovery?: (seg: WakeSegment) => void;
   log?: (line: string) => void;
   intervalMs?: number;
   config?: Partial<PowerGateConfig>;
@@ -424,6 +437,8 @@ export function startPowerMonitor(deps: PowerMonitorDeps): PowerMonitorHandle {
   let readFailures = 0;
   let notifyFailures = 0;
   let failAlarmSent = false;
+  // E1-5 A 面：前置告警档一次/电量段标志（接电或回升 >=advisoryRecover 重臂）。
+  let advisoryAlarmSent = false;
   let notifyAlarmSent = false;
   let disabledLogged = false;
   // ── b1 v2 事件订阅线状态 ──
@@ -491,6 +506,18 @@ export function startPowerMonitor(deps: PowerMonitorDeps): PowerMonitorHandle {
             title: "[LG-088] 唤醒补报·宿主睡眠段（事件日志锚）",
             body: `TriMLC 事件订阅线捕获睡眠段：入睡=${report.sleepAt ?? "缺对"} 唤醒=${report.wakeAt} 时长≈${min}min（Kernel-Power 506/507·OS 事实源）——daemon 已醒恢复值守，请对表该窗内缺口（tick 缺拍段/告警面盲区/跨机链路）。`,
           });
+          // ── E1-5 C 面（CTO 定谳 dcfbbb142·修复形三面之一）：wake 后立即一轮
+          // due 检查+stale reclaim（防 Modern Standby 冻结段积压 job 滞留至下一
+          // 节拍到岗；现役 runMissedJobs=启动补跑·wake 非启动——本回调补 wake
+          // 面）。宿主装配面接 cron 立即 tick；回调异常 catch 兜（不炸 tick）。
+          if (deps.onWakeRecovery) {
+            try {
+              log(`wake recovery: triggering immediate due-check + stale-reclaim tick`);
+              deps.onWakeRecovery(report);
+            } catch (e) {
+              log(`wake recovery callback failure: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }
         }
       } catch (e) {
         wakePollFailures += 1;
@@ -561,6 +588,32 @@ export function startPowerMonitor(deps: PowerMonitorDeps): PowerMonitorHandle {
       }
       // gate-soft-drop（硬→软部分恢复）=静默改闸仅日志，不通知（防噪声；
       // 完全恢复走 gate-recover 通知面）。
+    }
+    // ── E1-5 A 面（CTO 定谳 dcfbbb142·COS 16:35 裁乙连办件）：前置告警档——
+    // <advisoryTrigger 且未接电→升级告警值守面（一次/电量段）。告警非闸：
+    // 不动派发（软硬闸语义不变）。重臂=接电或电量回升 >=advisoryRecover
+    // （5 缓冲防抖动——50-54 区间持警不重复发）。机理=E1-5 定谳 Modern
+    // Standby 冻结风险在中等电量 DC 态即存在（硬闸 20% 挡不住 Adaptive 形态）。
+    if (
+      lastPct != null &&
+      lastPct < cfg.advisoryTrigger &&
+      lastAc === false &&
+      !advisoryAlarmSent
+    ) {
+      advisoryAlarmSent = true;
+      log(`advisory alarm: ${lastPct}% on battery (<${cfg.advisoryTrigger}) — standby-freeze risk`);
+      void dispatchNotify({
+        level: "normal",
+        seats: ["m-cos", "m-coo", "bod"],
+        title: "[LG-069 前置档] 电量<50% 未接电·待机冻结风险",
+        body: `本机电量 ${lastPct}% 且未接电（E1-5 前置告警档·非闸不动派发）：Adaptive Standby 待机冻结风险在中等电量即存在（E1-5 定谳卷 dcfbbb142——值守机接电=角色要求，8711+8713 双 daemon+多席常驻宿主）。请安排接电或知情值守。`,
+      });
+    } else if (
+      advisoryAlarmSent &&
+      (lastAc === true || (lastPct != null && lastPct >= cfg.advisoryRecover))
+    ) {
+      advisoryAlarmSent = false;
+      log(`advisory re-armed: ${lastAc ? "AC online" : `battery ${lastPct}% (>=${cfg.advisoryRecover})`}`);
     }
   }
 

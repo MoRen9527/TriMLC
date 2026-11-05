@@ -185,7 +185,13 @@ export function sweepStaleRunning(deps: CronTimerDeps): void {
 
 // ── Timer tick ──
 
-async function onTimerTick(state: CronTimerState, deps: CronTimerDeps): Promise<void> {
+/**
+ * Timer tick（due 检查+stale reclaim sweep+派发+重臂）。E1-5 C 面（CTO 定谳
+ * dcfbbb142）导出：宿主 wake 恢复回调（powerMonitor onWakeRecovery→cron
+ * service.wakeRecoveryTick）在 wake 后立即调一轮——不等 armTimer 节拍到岗
+ * （Modern Standby 冻结段积压 job 即时补跑面）。幂等：withLock+locked 早退。
+ */
+export async function onTimerTick(state: CronTimerState, deps: CronTimerDeps): Promise<void> {
   if (state.locked) { armTimer(state, deps); return; }
 
   await withLock(state, async () => {
