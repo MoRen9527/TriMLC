@@ -179,11 +179,15 @@ export function stepPowerGate(
 // 行 AC=<0|1|255>;FLAG=<byte>;PCT=<0-100|255>;CIM=<0-100|NA>（NA=CIM 单边失败，
 // 退 P/Invoke 单读，不判读失败——P/Invoke 链活着即检测活着）。脚本常量内嵌
 // 本模块（零临时文件写面；每次 spawn 独立进程编译，60s 节律下开销可忽略）。
+// 修复①（LG-069 勘修窗 2026-11-06·勘定窗机理=wmiprvse 停摆窗 CIM cmdlet 挂死
+// →整 snippet 挂→20s 外层超时→连败告警）：CIM 段 job 化——Start-Job 独立进程
+// 跑 Get-CimInstance，Wait-Job -Timeout 6 归不齐降级 NA（P/Invoke 主读保活），
+// 两分支统一 Remove-Job -Force 防 job 泄漏；外层 20s 兜底不动。
 const PS_POWER_SNIPPET =
   "$t='using System.Runtime.InteropServices;public struct SPS{public byte AC;public byte Flag;public byte Pct;public byte R1;public int LT;public int FLT;}" +
   'public class PSPower{[DllImport("kernel32.dll")]public static extern bool GetSystemPowerStatus(out SPS s);}\';' +
   "Add-Type -TypeDefinition $t;$s=New-Object SPS;[void][PSPower]::GetSystemPowerStatus([ref]$s);" +
-  'try{$b=Get-CimInstance Win32_Battery -ErrorAction Stop;if($b){$c=($b|Measure-Object -Property EstimatedChargeRemaining -Minimum).Minimum}else{$c=\'NA\'}}catch{$c=\'NA\'};' +
+  'try{$j=Start-Job{$b=Get-CimInstance Win32_Battery -ErrorAction Stop;if($b){($b|Measure-Object -Property EstimatedChargeRemaining -Minimum).Minimum}else{\'NA\'}};if(Wait-Job $j -Timeout 6){$r=Receive-Job $j;$c=if($r){$r}else{\'NA\'}}else{$c=\'NA\'};Remove-Job $j -Force -ErrorAction SilentlyContinue}catch{$c=\'NA\'};' +
   '"AC=$($s.AC);FLAG=$($s.Flag);PCT=$($s.Pct);CIM=$c"';
 
 /** 解析机器行→读数（纯函数，单测直驱；min() 保守取值设计正则在此单点）。 */
