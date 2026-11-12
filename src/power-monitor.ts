@@ -183,6 +183,10 @@ export function stepPowerGate(
 // →整 snippet 挂→20s 外层超时→连败告警）：CIM 段 job 化——Start-Job 独立进程
 // 跑 Get-CimInstance，Wait-Job -Timeout 6 归不齐降级 NA（P/Invoke 主读保活），
 // 两分支统一 Remove-Job -Force 防 job 泄漏；外层 20s 兜底不动。
+// 修复②（LG-069 勘修窗 2026-11-12·勘定窗机理=睡眠恢复窗系统高载：powershell
+// 冷启+Add-Type csc 编译持续超 20s 外层超时→连败告警；恒定性排除=同日 62% 读
+// 成功实证）：外层超时放宽 20s→45s（本函数缺省参）+读失败退避+告警 dedup
+// （常量段修复②族注）。
 const PS_POWER_SNIPPET =
   "$t='using System.Runtime.InteropServices;public struct SPS{public byte AC;public byte Flag;public byte Pct;public byte R1;public int LT;public int FLT;}" +
   'public class PSPower{[DllImport("kernel32.dll")]public static extern bool GetSystemPowerStatus(out SPS s);}\';' +
@@ -207,7 +211,7 @@ export function parsePowerOutput(out: string): PowerReading {
   return { percent, percentRaw: raw, percentCim: cim, acOnline: ac === 1, batteryPresent };
 }
 
-export function defaultReadPower(timeoutMs = 20_000): Promise<PowerReading> {
+export function defaultReadPower(timeoutMs = 45_000): Promise<PowerReading> {
   return new Promise((resolve, reject) => {
     // PSModulePath 净化（教训族：父链 pwsh7 目录污染致 PS5.1 加载错版模块）——
     // 删除后 powershell.exe 按自身缺省重建模块路径。
@@ -319,6 +323,16 @@ export interface PowerMonitorDeps {
   log?: (line: string) => void;
   intervalMs?: number;
   config?: Partial<PowerGateConfig>;
+  /** 修复②族（LG-069 勘修窗 2026-11-12）参数面——生产零传=缺省新语义；
+   * 单测注入 0/1 复现旧语义路径或专测新语义。 */
+  /** 读失败退避基数（连败节律 base→2×base→封顶 max；0=门零挡）。 */
+  readBackoffBaseMs?: number;
+  /** 读失败退避封顶（缺省 5min；短基数单测注入小 cap 防长门吃后续段）。 */
+  readBackoffMaxMs?: number;
+  /** 失败告警时间窗（窗内不重发；0=时间窗零挡）。 */
+  failAlarmDedupMs?: number;
+  /** 失败告警稳定窗复位拍数（连 N 拍读成功才重臂；1=单拍复位旧语义）。 */
+  readRecoveryStableTicks?: number;
 }
 
 export interface PowerMonitorHandle {
@@ -328,6 +342,19 @@ export interface PowerMonitorHandle {
 
 export const POWER_READ_FAILURE_ALARM_THRESHOLD = 3;
 export const POWER_NOTIFY_FAILURE_ALARM_THRESHOLD = 3;
+// 修复②族（LG-069 勘修窗 2026-11-12·勘定窗机理=睡眠恢复窗系统高载下 powershell
+// 冷启+Add-Type csc 编译持续超 20s→连败 3 次→告警；真值 100% 满电 WMI 实探
+// 2026-11-11 19:1x 实锚=读数链失效非真值危机）：
+// ①外层超时 20s→45s（defaultReadPower 缺省参——调用点零触面）；
+// ②读失败退避=读抑制合一：连败节律 60s→120s→300s 封顶（成功复位）——tick 节律
+//   不动（wake 补报线不受抑制），仅 read 门控降频；
+// ③失败告警 dedup 双保险：时间窗（30min 内不重发）+稳定窗复位（连续 3 拍读成功
+//   才重臂 failAlarmSent——单拍成功即复位=抖动窗内每 3 连败段重发一告警，2026-11-11
+//   夜 5 面重复到达实锚的 daemon 侧机理面；传播层缺口归 MMC 面另行勘修）。
+export const POWER_READ_BACKOFF_BASE_MS = 60_000;
+export const POWER_READ_BACKOFF_MAX_MS = 300_000;
+export const POWER_READ_RECOVERY_STABLE_TICKS = 3;
+export const POWER_FAIL_ALARM_DEDUP_MS = 30 * 60 * 1000;
 // LG-088 件b1 v2（F 件·CEO 2026-10-17 11:00:25 两裁①）：唤醒补报阈值——睡眠段
 // 时长 >5min 才补报（浅睡段静默防噪声；今晨实证段① 2min57s 静默·段②③ 64min/
 // 5min49s 应报）。v1 tick 冻结差值法（POWER_WAKE_GAP_MS）已删除——结构性缺陷：
@@ -441,6 +468,16 @@ export function startPowerMonitor(deps: PowerMonitorDeps): PowerMonitorHandle {
   let readFailures = 0;
   let notifyFailures = 0;
   let failAlarmSent = false;
+  // 修复②族状态：读退避门（连败降频·成功复位）+告警 dedup（稳定窗+时间窗）。
+  // 参数可注入（单测 0/1=旧语义路径）；生产零传=缺省新语义。
+  const backoffBaseMs = deps.readBackoffBaseMs ?? POWER_READ_BACKOFF_BASE_MS;
+  const backoffMaxMs = deps.readBackoffMaxMs ?? POWER_READ_BACKOFF_MAX_MS;
+  const failDedupMs = deps.failAlarmDedupMs ?? POWER_FAIL_ALARM_DEDUP_MS;
+  const stableTicks = deps.readRecoveryStableTicks ?? POWER_READ_RECOVERY_STABLE_TICKS;
+  let nextReadAt = 0;
+  let readBackoffMs = Math.min(backoffBaseMs, backoffMaxMs);
+  let successStreak = 0;
+  let lastFailAlarmAt = 0;
   // E1-5 A 面：前置告警档一次/电量段标志（接电或回升 >=advisoryRecover 重臂）。
   let advisoryAlarmSent = false;
   let notifyAlarmSent = false;
@@ -528,18 +565,31 @@ export function startPowerMonitor(deps: PowerMonitorDeps): PowerMonitorHandle {
         log(`wake event poll failure #${wakePollFailures}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
+    // 修复②读退避门：连败窗内 read 降频（60s→120s→300s 封顶），tick 节律与
+    // wake 补报线不受抑制；成功复位回 60s 节律。跳拍仅日志一次/退避段（防刷屏）。
+    if (Date.now() < nextReadAt) {
+      return;
+    }
     let r: PowerReading;
     try {
       r = await read();
     } catch (e) {
       readFailures += 1;
-      log(`power read failure #${readFailures}: ${e instanceof Error ? e.message : String(e)}`);
-      // 连续 3 次失败→告警一次/每失效段（闸失效走告警面；读恢复即复位可再警）。
+      successStreak = 0;
+      nextReadAt = Date.now() + readBackoffMs;
+      log(
+        `power read failure #${readFailures} (backoff ${Math.round(readBackoffMs / 1000)}s): ${e instanceof Error ? e.message : String(e)}`,
+      );
+      readBackoffMs = Math.min(readBackoffMs * 2, backoffMaxMs);
+      // 连续 3 次失败→告警一次/失效段+时间窗 dedup（30min 内不重发——抖动窗
+      // 稳定复位-再触发循环降噪；窗过后同失效段仍可再警=漏报面最小化）。
       if (
         readFailures >= POWER_READ_FAILURE_ALARM_THRESHOLD &&
-        !failAlarmSent
+        !failAlarmSent &&
+        Date.now() - lastFailAlarmAt >= failDedupMs
       ) {
         failAlarmSent = true;
+        lastFailAlarmAt = Date.now();
         void dispatchNotify({
           level: "urgent",
           seats: ["m-cos", "bod"],
@@ -550,7 +600,17 @@ export function startPowerMonitor(deps: PowerMonitorDeps): PowerMonitorHandle {
       return;
     }
     readFailures = 0;
-    failAlarmSent = false;
+    successStreak += 1;
+    nextReadAt = 0;
+    readBackoffMs = backoffBaseMs;
+    // 稳定窗复位：连续 N 拍读成功才重臂 failAlarmSent（单拍成功即复位=抖动窗
+    // 重发源·修复②勘定；缺省 N=3）。复位**不清** lastFailAlarmAt——时间窗独立
+    // 于稳定窗：任何 failDedupMs 窗内至多 1 条失败告警（稳定复位后窗内再触发
+    // 仍被时间窗挡·过期自然放行=时间窗本义；清零则时间窗被稳定窗短路形同虚设）。
+    if (failAlarmSent && successStreak >= stableTicks) {
+      failAlarmSent = false;
+      log(`power read stable ${successStreak} ticks: fail alarm re-armed (time-dedup window intact)`);
+    }
     lastReadAt = new Date().toISOString();
     lastPct = r.percent;
     lastRawPct = r.percentRaw;

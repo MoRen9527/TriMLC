@@ -148,6 +148,11 @@ describe('LG-069 startPowerMonitor 检测失败告警', () => {
       notify: (p) => alerts.push({ level: p.level, seats: [...p.seats], title: p.title }),
       log: () => {},
       intervalMs: 5,
+      // 修复②新语义（退避+稳定窗+时间窗）由下方专测覆盖；本测=旧语义路径
+      // （单拍复位+时间窗零挡）回归锚。
+      readBackoffBaseMs: 0,
+      failAlarmDedupMs: 0,
+      readRecoveryStableTicks: 1,
     });
     try {
       await new Promise((r) => setTimeout(r, 250)); // 全量负载下 60ms 窗 tick 不足（flake 实证），加宽
@@ -165,6 +170,83 @@ describe('LG-069 startPowerMonitor 检测失败告警', () => {
       const before = alerts.length;
       await new Promise((r) => setTimeout(r, 60));
       assert.ok(alerts.length > before, '新失效段重新告警（streak 制非全局一次）');
+    } finally {
+      handle.stop();
+    }
+  });
+});
+
+// ── C2. 修复②族新语义专测（LG-069 勘修窗 2026-11-12·读退避+告警时间窗）──
+
+describe('修复② 读退避门+告警时间窗 dedup', () => {
+  it('读退避门：失败 1 拍即退避（read 不触实证）→退避过期恢复可读（lastReadAt 复活）', async () => {
+    let fail = true;
+    let readCount = 0;
+    const handle = startPowerMonitor({
+      queryWakeEventsXml: NO_WAKE,
+      readPower: async () => {
+        readCount += 1;
+        if (fail) throw new Error('mock read fail');
+        return reading(55, false);
+      },
+      log: () => {},
+      intervalMs: 5,
+      readBackoffBaseMs: 250, // 失败后 250ms 门——5ms 节律下后续拍全跳
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 30)); // 失败 1 拍即设门·后续拍全跳
+      assert.equal(readCount, 1, '退避门生效：门内 read 不再被触（调用计数冻结）');
+      assert.equal(handle.snapshot().readFailures, 1);
+
+      fail = false;
+      await new Promise((r) => setTimeout(r, 300)); // 退避过期（250ms）→恢复拍可读
+      assert.ok(handle.snapshot().lastReadAt !== null, '退避过期后读恢复（lastReadAt 复活）');
+      assert.equal(handle.snapshot().readFailures, 0, '读成功即失败计数复位');
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it('告警时间窗：稳定复位后窗内再触发不重发·窗过期放行再警（30min 级 dedup 语义）', async () => {
+    const alerts: Array<{ level: string }> = [];
+    let fail = true;
+    const handle = startPowerMonitor({
+      queryWakeEventsXml: NO_WAKE,
+      readPower: async () => {
+        if (fail) throw new Error('mock read fail');
+        return reading(55, false);
+      },
+      notify: (p) => alerts.push({ level: p.level }),
+      log: () => {},
+      intervalMs: 5,
+      readBackoffBaseMs: 5, // 短退避让连败可达（真实节律下门=隔拍读递增）
+      readBackoffMaxMs: 20, // cap 同步注入——防段B'连败把退避推到 5min 长门吃段C
+      failAlarmDedupMs: 500,
+      readRecoveryStableTicks: 1,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 40)); // 段A：≥3 连败→首警
+      assert.equal(alerts.filter((a) => a.level === 'urgent').length, 1, '首警恰一次');
+
+      fail = false;
+      await new Promise((r) => setTimeout(r, 20)); // 段B：≥1 拍成功→稳定复位（stable=1）
+      fail = true;
+      await new Promise((r) => setTimeout(r, 40)); // 段B'：再 3 连败——500ms 时间窗内
+      assert.equal(
+        alerts.filter((a) => a.level === 'urgent').length,
+        1,
+        '时间窗内再触发不重发（窗独立于稳定窗·清零即短路病灶已修）',
+      );
+
+      await new Promise((r) => setTimeout(r, 480)); // 窗过期（首警起 >500ms）
+      fail = false;
+      await new Promise((r) => setTimeout(r, 20)); // 复位
+      fail = true;
+      await new Promise((r) => setTimeout(r, 40)); // 段C：3 连败→窗过期→再警
+      assert.ok(
+        alerts.filter((a) => a.level === 'urgent').length >= 2,
+        '窗过期新失效段放行再警（漏报面最小化）',
+      );
     } finally {
       handle.stop();
     }
@@ -250,6 +332,7 @@ describe('修复批① 双读保守 min', () => {
       },
       log: () => {},
       intervalMs: 5,
+      readBackoffBaseMs: 0, // 退避门零挡——恢复拍立即可读（退避门由专测覆盖）
     });
     try {
       await new Promise((r) => setTimeout(r, 30)); // 失败期（>=2 tick）
