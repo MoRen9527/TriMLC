@@ -238,6 +238,18 @@ export function createWakeAction(deps: WakeDeps = {}) {
     const reasonText = typeof payload?.reason === 'string' ? payload.reason : 'wake';
     const sentAt = nowIso();
     const bodyText = `[seat-wake probe] ${reasonText} @${sentAt}`;
+
+    // R6-b daemon 侧 codepoint 探针（W3-h 勘定卷 §二.②·乱码层位分界双证随件）——零改码面
+    // 遵行（只加日志与结果面读数·帧构造零动）：bodyBytes=bodyText 全量 utf8 字节长；
+    // cp16Hex=reasonText 前 16 codepoint hex。取段注记：bodyText 前 16 codepoint=ASCII 前缀
+    // （'[seat-wake prob'）对 A 段（拍发链）中文乱码零分辨力——cp16 取 reason 段（中文直接载体
+    // ·乱码即在此显形）方能「收到时已乱 vs 发出才乱」一次分清（偏离 CTO 卷字面·毕报载明候对表）。
+    // reason 非密值面可回显（D-46 照役仅 token 面）。
+    const bodyBytes = Buffer.byteLength(bodyText, 'utf8');
+    const cp16Hex = Array.from(reasonText.slice(0, 16))
+      .map((ch) => ch.codePointAt(0)!.toString(16).padStart(4, '0'))
+      .join(' ');
+    console.log(`[seat-wake] bodyBytes=${bodyBytes} cp16=[${cp16Hex}] reason16="${reasonText.slice(0, 16)}"`);
     // ③ from=daemon 自建临时监听 socket（\\.\pipe\LOCAL\trilc-wake-reply-<uuid>）——
     //    过对端塑形检查（did: 风险消解）·回执可达面。W3-g §四.3：connection handler 接线
     //    （server 拨回 from 地址的消费面·原造件 listener 零消费结构性缺口补齐）。
@@ -300,6 +312,8 @@ export function createWakeAction(deps: WakeDeps = {}) {
         msgId,
         replied: reply !== null,
         deliveredAt: sentAt,
+        bodyBytes,
+        cp16Hex,
       };
     } catch (err) {
       // err 掩形（校形卷 §三.4 照役）——只出 errno 码形；W3-f：key 信封解析败→'auth_parse_failed' 出形

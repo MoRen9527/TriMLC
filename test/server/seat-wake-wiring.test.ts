@@ -170,6 +170,14 @@ describe('W3 seat-wake 接线白盒（W3-a 五步形）', () => {
       );
       assert.ok(!('body' in msgFrame), 'body 字段零在场（双置删除·W3-g §四.1）');
       assert.ok(!('token' in msgFrame), 'token 不进消息帧（auth 帧传输层专用·D-46）');
+      // R6-b 探针读数随件（W3-h §二.②·乱码分界双证）
+      const expectedBody = '[seat-wake probe] wake @2026-11-20T00:00:00.000Z';
+      assert.equal((r as { bodyBytes?: number }).bodyBytes, Buffer.byteLength(expectedBody, 'utf8'), 'bodyBytes=bodyText 全量 utf8 字节（探针）');
+      assert.equal(
+        (r as { cp16Hex?: string }).cp16Hex,
+        Array.from('wake'.slice(0, 16)).map((c) => c.codePointAt(0)!.toString(16).padStart(4, '0')).join(' '),
+        'cp16Hex=reason 前 16 codepoint hex（探针·ASCII 形）',
+      );
     });
     it('u11 busy 状态照发语义（W3-a §二.2·status 随结果面透传）', async () => {
       const deps = makeDeps({ sessions: [{ pid: 24572, name: 'bod', agent: 'Board', socketPath: '\\\\.\\pipe\\x', status: 'busy' }] });
@@ -183,6 +191,15 @@ describe('W3 seat-wake 接线白盒（W3-a 五步形）', () => {
       assert.equal(r.hasToken, false);
       assert.equal(r.delivered, true);
       assert.equal(deps.written.length, 1, 'token 缺席=跳过 auth 握手（单消息帧）');
+    });
+    it('u17 R6-b 探针中文形：reason 中文 → bodyBytes 多字节+cp16Hex 中文码点（乱码分界读数能力钉）', async () => {
+      const deps = makeDeps();
+      const r = await createWakeAction(deps)({ source: 'probe', reason: '中文分界拍' });
+      const expectedBody = '[seat-wake probe] 中文分界拍 @2026-11-20T00:00:00.000Z';
+      assert.equal((r as { bodyBytes?: number }).bodyBytes, Buffer.byteLength(expectedBody, 'utf8'), 'bodyBytes 多字节计（中文字节>字符数）');
+      const expectedCp = Array.from('中文分界拍'.slice(0, 16)).map((c) => c.codePointAt(0)!.toString(16).padStart(4, '0')).join(' ');
+      assert.equal((r as { cp16Hex?: string }).cp16Hex, expectedCp, 'cp16Hex=中文 codepoint hex');
+      assert.ok(expectedCp.includes('4e2d'), '中文码点 4e2d（中）在探——乱码时此处显形=「收到时已乱 vs 发出才乱」分界读数核心');
     });
   });
 
