@@ -160,11 +160,15 @@ describe('W3 seat-wake 接线白盒（W3-a 五步形）', () => {
       );
       assert.equal(msgFrame.msg_id, (r as { msgId?: string }).msgId, 'msg_id=结果面 msgId（peer_message_status 回执关联锚）');
       assert.ok(
-        String(msgFrame.from).startsWith('\\\\.\\pipe\\LOCAL\\trilc-wake-reply-'),
-        'from=daemon 自建临时 reply socket（③ 塑形检查过形·did: 风险消解）',
+        String(msgFrame.from).startsWith('uds:\\\\.\\pipe\\LOCAL\\trilc-wake-reply-'),
+        'from=uds: 前缀+自建临时 reply socket（W3-g §四.2·lPo 前缀检过）',
       );
-      assert.equal(msgFrame.body, msgFrame.message, 'body/message 双字段同值（字段名三候覆盖）');
-      assert.ok(String(msgFrame.body).startsWith('[seat-wake probe]'), 'body 信文自描述形（护栏①）');
+      assert.deepEqual(
+        msgFrame.message,
+        { role: 'user', content: '[seat-wake probe] wake @2026-11-20T00:00:00.000Z' },
+        'message 对象形（官方配方铁证·De 只读 message.content·W3-g §四.1）',
+      );
+      assert.ok(!('body' in msgFrame), 'body 字段零在场（双置删除·W3-g §四.1）');
       assert.ok(!('token' in msgFrame), 'token 不进消息帧（auth 帧传输层专用·D-46）');
     });
     it('u11 busy 状态照发语义（W3-a §二.2·status 随结果面透传）', async () => {
@@ -346,11 +350,46 @@ describe('W3-WAKE 真值连接器案组（s1-s4·真 socket 对拍·修复②回
       assert.equal(f1.fromMode, 'bypass', 'fromMode 写入（③闸）');
       assert.equal((r as { msgId?: string }).msgId, f1.msg_id, 'msg_id 关联一致');
       assert.equal(
-        String(f1.from).startsWith('\\\\.\\pipe\\LOCAL\\trilc-wake-reply-'), true,
-        'from=自建临时 reply socket 形',
+        String(f1.from).startsWith('uds:\\\\.\\pipe\\LOCAL\\trilc-wake-reply-'), true,
+        'from=uds: 前缀+自建临时 reply socket 形（W3-g §四.2）',
+      );
+      assert.deepEqual(
+        f1.message,
+        { role: 'user', content: '[seat-wake probe] true-socket-e2e @2026-11-20T00:00:00.000Z' },
+        'message 对象形（官方配方铁证·W3-g §四.1）',
       );
     } finally {
       await srv.close();
     }
+  });
+
+  it('s6 回执拨回真值案：对端拨 from 地址→内部 replyServer 消费→race resolve（W3-g §四.3 结构性缺口回归钉）', { timeout: 3000 }, async () => {
+    // mock connector=原连接零回写形（Windows accept 静默实锚模拟·waitReply 满 2s 窗才 null）——
+    // 唯一回执通道=server 拨回 from 地址（inbound handler 消费·race 先到先 resolve）。
+    // 修复前此案 replied:false 红（造件 listener 零消费·回执不可达）=结构性缺口回归钉。
+    let capturedFrom: string | null = null;
+    const deps = makeDeps({
+      connect: async () => ({
+        write: (data: string) => {
+          try {
+            const f = JSON.parse(data) as { from?: string };
+            if (typeof f.from === 'string' && f.from.startsWith('uds:')) capturedFrom = f.from.slice(4);
+          } catch { /* auth 帧无 from 形容忍 */ }
+        },
+        waitReply: (ms: number) => new Promise<string | null>((res) => setTimeout(() => res(null), ms)),
+        destroy: () => {},
+      }),
+    });
+    const p = createWakeAction(deps)({ source: 's6', reason: 'inbound-race' });
+    await new Promise((r) => setTimeout(r, 120)); // listen+两帧写完成
+    assert.ok(capturedFrom !== null, 'from 地址捕获（uds: 前缀剥除=裸管道路径）');
+    // 对端拨回：真连 replyServer 裸路径→写 peer_message_status 回执行→半关（close 触发 inboundDone）
+    const sock = net.connect(capturedFrom as string);
+    await new Promise<void>((res, rej) => { sock.once('connect', () => res()); sock.once('error', rej); });
+    sock.write(JSON.stringify({ type: 'peer_message_status', status: 'held', orig_msg_id: 'x' }) + '\n');
+    sock.end();
+    const r = await p;
+    assert.equal(r.delivered, true);
+    assert.equal((r as { replied?: boolean }).replied, true, 'inbound 回执经 race resolve（replied=true·held 状态面可达）');
   });
 });

@@ -18,10 +18,15 @@
 //   ②auth 首行握手——连接后先发 {type:'auth', token:<peerToken>}（peerToken=key 件 119B 值真身
 //   定谳·activeTokens 池校验；D-46 值面零回显零落卷照役）·authRequired 时未鉴权非 auth 帧→丢+断连；
 //   ③分类闸 fromMode:"bypass" 写入（held→直投·honor 实效候复拍判；undeclared→held 候 idle）。
-//   消息帧形={type:'user', msg_id:<uuid>, from:<自建临时 socket>, fromMode:'bypass', name, body, message}
-//   ——from=daemon 自建临时监听 socket（\\.\pipe\LOCAL\trilc-wake-reply-<uuid>·塑形检查过·did: 风险
-//   消解）·msg_id 关联 peer_message_status 回执（held/delivered·waitReply 可等真回执）·body/message
-//   双字段同值（字段名三候覆盖·复拍指纹收敛后裁单）。
+//   消息帧形（W3-g 第四层勘定卷定谳·官方注入配方铁证）={type:'user', msg_id:<uuid>,
+//   from:'uds:'+<自建临时 socket>, fromMode:'bypass', name, message:{role:'user',content:<正文>}}
+//   ——message=对象形铁证（De 只读 message.content·字符串形→访问器落空→静默丢弃·第四层根因
+//   实锚）；from 加 uds: 前缀（回执发送侧 lPo() 首检 startsWith("uds:")·裸路径→hold-receipt
+//   skipped 静默跳过——replyServer 监听裸路径不变·前缀只是地址串格式）；msg_id 关联
+//   peer_message_status 回执（held/refused/release 状态面）。回执双路 race：原连接 waitReply 窗
+//   与 replyServer inbound connection（server 拨回 from 地址·VIs 回执装配面）先到先 resolve——
+//   Windows verifiedPeerPid 恒缺席→oe 即时回连永不触发→accept 路径静默：replied=false+连接保持
+//   =候选成功形（queue 已路由·终判锚=接收侧收信确认）。
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -234,9 +239,22 @@ export function createWakeAction(deps: WakeDeps = {}) {
     const sentAt = nowIso();
     const bodyText = `[seat-wake probe] ${reasonText} @${sentAt}`;
     // ③ from=daemon 自建临时监听 socket（\\.\pipe\LOCAL\trilc-wake-reply-<uuid>）——
-    //    过对端塑形检查（did: 非本机 socket namespace 形→该路径 drop 风险消解）·回执可达面。
+    //    过对端塑形检查（did: 风险消解）·回执可达面。W3-g §四.3：connection handler 接线
+    //    （server 拨回 from 地址的消费面·原造件 listener 零消费结构性缺口补齐）。
     const replySocketPath = `\\\\.\\pipe\\LOCAL\\trilc-wake-reply-${randomUUID()}`;
     const replyServer = net.createServer();
+    const inbound = new Set<net.Socket>();
+    let inboundDone: ((v: string | null) => void) | null = null;
+    replyServer.on('connection', (c: net.Socket) => {
+      inbound.add(c);
+      const chunks: Buffer[] = [];
+      c.on('data', (d: Buffer) => chunks.push(d));
+      c.on('close', () => {
+        inbound.delete(c);
+        inboundDone?.(Buffer.concat(chunks).toString('utf8') || null);
+      });
+      c.on('error', () => {});
+    });
     let conn: SocketConn | null = null;
     try {
       await new Promise<void>((resolve, reject) => {
@@ -246,26 +264,31 @@ export function createWakeAction(deps: WakeDeps = {}) {
       replyServer.on('error', () => {}); // listen 后 err 静默（对端回信中断面·不挂 daemon）
 
       conn = await connect(target.socketPath);
-      // ② auth 首行握手（token 装配面有则发·无则跳过如实由 hasToken 面）——两候形主铸带
-      //    type（fnl 判定若查 type 过·若只取 S.token 字段亦过；D-46 值面零回显零落卷照役）
+      // ② auth 首行握手（token 装配面有则发·无则跳过如实由 hasToken 面）——官方配方逐字吻合
+      //    定谳（W3-g §三·txi(token) 发送侧构造正身）；D-46 值面零回显零落卷照役
       if (token) conn.write(JSON.stringify({ type: 'auth', token }) + '\n');
-      // ① NDJSON 行尾 + ④⑤ fromMode/type/msg_id 帧形（body/message 双字段同值=字段名三候覆盖）
+      // ① NDJSON 行尾+④⑤ W3-g 对象形（官方配方铁证：message:{role:'user',content}——De 只读
+      //    message.content·双置字符串形删除）+from uds: 前缀（lPo 前缀检·§四.2）
       const msgId = randomUUID();
       conn.write(
         JSON.stringify({
           type: 'user',
           msg_id: msgId,
-          from: replySocketPath,
+          from: 'uds:' + replySocketPath,
           fromMode: 'bypass',
           name: 'trilc-seat-wake',
-          body: bodyText,
-          message: bodyText,
+          message: { role: 'user', content: bodyText },
         }) + '\n',
       );
-      const reply = await conn.waitReply(2000);
-      // 5. 结果面——回执语义（W3-e §二 读数）：harness 有 peer_message_status 回执帧
-      //    （held/delivered·按 msg_id/orig_msg_id 关联）——waitReply 等真回执信息面；
-      //    投递成判据=write 成+连接保持到 destroy；replied=false≠投递败（held 形）。
+
+      // 回执双路 race（W3-g §四.3）：conn.waitReply（原连接窗·保底）与 replyServer inbound
+      // （server 拨回 from 地址）先到先 resolve——waitReply 超时后 inbound 残留由 finally 收口触发 close
+      // →resolve（无观察者·零泄漏）。
+      const inboundReply = new Promise<string | null>((res) => { inboundDone = res; });
+      const reply = await Promise.race([conn.waitReply(2000), inboundReply]);
+      // 5. 结果面——回执语义（W3-g §四.3 校准）：Windows verifiedPeerPid 恒缺席→oe 即时回连
+      //    永不触发→accept 路径静默——replied=false+连接保持=候选成功形（queue 已路由·
+      //    终判锚=接收侧收信确认）；replied=true=held/refused/release 回执面（可解析状态）。
       return {
         delivered: true,
         wired: true,
@@ -291,8 +314,9 @@ export function createWakeAction(deps: WakeDeps = {}) {
           : err instanceof Error ? ((err as NodeJS.ErrnoException).code ?? 'delivery_error') : 'delivery_error',
       };
     } finally {
-      // ⑥ 泄漏收口（W3-WAKE 修复③·§一.3）：任何路径 socket 必收口（conn destroy+临时 reply server close）
+      // ⑥ 泄漏收口（W3-WAKE 修复③+§四.3）：任何路径必收口（conn destroy+inbound sockets+reply server）
       conn?.destroy();
+      for (const c of inbound) c.destroy();
       try { replyServer.close(); } catch { /* 已关形容忍 */ }
     }
   };
