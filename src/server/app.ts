@@ -236,6 +236,42 @@ function hostCandidateAllowed(candidate: string, entries: HostAllowEntry[]): boo
   return false;
 }
 
+// ── Wake 推唤端点接线口（BOD 实时收件三级链 W2·派工卷
+//    cos-w2-wake-endpoint-dispatch-20261120 §二 W2-b）──
+// 撞词消歧：本接线口服务 POST /internal/v1/wake 推唤信号消费端点（BOD 会话
+// 推唤链），与 heartbeat-wake（心跳唤醒模块·app 成员 this.wake）无关联。
+// 骨架期 handler 为空 = 端点可用但 accepted:false（wake_action_not_wired）；
+// 接线面（唤 bod 会话通道形·cc-socks/tmux send-keys 候勘）候 m-cto W2-a
+// 形定卷在树后由接线施工填（W3 会话唤醒接线段），本文件只留可插接口位。
+
+export interface WakeActionPayload {
+  source?: string;
+  reason?: string;
+}
+
+export interface WakeActionResult {
+  [key: string]: unknown;
+}
+
+type WakeActionHandler = (payload: WakeActionPayload) => Promise<WakeActionResult>;
+
+let wakeActionHandler: WakeActionHandler | null = null;
+
+/** 注册 wake 动作实现（W2-a 形定后接线施工调用；重复注册以最后一次为准）。 */
+export function setWakeActionHandler(handler: WakeActionHandler): void {
+  wakeActionHandler = handler;
+}
+
+/** 解除注册（测试还原/通道退役用）。 */
+export function clearWakeActionHandler(): void {
+  wakeActionHandler = null;
+}
+
+/** 接线态查询（探针/测试断言面）。 */
+export function isWakeActionWired(): boolean {
+  return wakeActionHandler !== null;
+}
+
 /** Host 头判定（DNS rebinding 防护）：缺失/空白 ⇒ 拒。 */
 export function hostHeaderAllowed(hostHeader: string | undefined, port: number): boolean {
   if (typeof hostHeader !== 'string' || !hostHeader.trim()) return false;
@@ -2052,6 +2088,60 @@ export function createTriLCApp(env: TriLCEnv) {
               ? { object: 'power', ...powerMonitor.snapshot() }
               : { object: 'power', percent: null, percentRaw: null, percentCim: null, acOnline: null, gate: 'none', batteryPresent: true, readFailures: 0, notifyFailures: 0, lastReadAt: null },
           ));
+          return;
+        }
+
+        // ── POST /internal/v1/wake（BOD 实时收件三级链 W2 推唤信号消费口）──
+        // 派工卷 cos-w2-wake-endpoint-dispatch-20261120 §二 W2-b。鉴权照现役
+        // 全局门族：本路由置于 X-Internal-Token 门后即自动受门（零新增鉴权面·
+        // 现役顺序契约 Host/Origin 403 → token 401 → 路由 原样覆盖）。骨架期
+        // 未接线 ⇒ 200 {object:'wake', accepted:false, wired:false,
+        // reason:'wake_action_not_wired'}（端点可用可探·值面完工判据形）；
+        // 接线后 handler 结果透传 accepted:true。撞词消歧：与 heartbeat-wake
+        // （this.wake 心跳唤醒模块）无关联。
+        if (req.url === '/internal/v1/wake' && req.method === 'POST') {
+          try {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) chunks.push(chunk);
+            const raw = Buffer.concat(chunks).toString('utf-8');
+            let parsed: unknown = {};
+            if (raw.length > 0) {
+              try {
+                parsed = JSON.parse(raw);
+              } catch {
+                res.writeHead(400, { 'content-type': 'application/json' });
+                res.end(JSON.stringify({ error: 'invalid_json_body' }));
+                return;
+              }
+            }
+            if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'payload_must_be_object' }));
+              return;
+            }
+            const payload = parsed as WakeActionPayload;
+            if (payload.source !== undefined && typeof payload.source !== 'string') {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'source_must_be_string' }));
+              return;
+            }
+            if (payload.reason !== undefined && typeof payload.reason !== 'string') {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'reason_must_be_string' }));
+              return;
+            }
+            if (!wakeActionHandler) {
+              res.writeHead(200, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ object: 'wake', accepted: false, wired: false, reason: 'wake_action_not_wired' }));
+              return;
+            }
+            const result = await wakeActionHandler(payload);
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ object: 'wake', accepted: true, wired: true, ...result }));
+          } catch (err) {
+            res.writeHead(500, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'wake_action_failed', message: (err as Error).message }));
+          }
           return;
         }
 
