@@ -313,7 +313,8 @@ describe('W2 seat-wake 端点端到端：createTriLCApp 真实 HTTP（全局门�
         if (base === '24572.json') {
           return JSON.stringify({ name: 'bod', agent: 'Board', messagingSocketPath: '\\\\.\\pipe\\LOCAL\\cc-msg-mock0', status: 'idle' });
         }
-        return 'b'.repeat(64);
+        // W3-f 信封形：key 件=JSON 信封 {peerToken}（CTO 令④随件·值面 'b'*64 零变）
+        return JSON.stringify({ peerToken: 'b'.repeat(64) });
       },
       fileExists: (p: string) => (p.split(/[\\/]/).pop() ?? '').endsWith('.key'),
       pidAlive: () => true,

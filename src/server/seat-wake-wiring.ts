@@ -212,10 +212,19 @@ export function createWakeAction(deps: WakeDeps = {}) {
       return { delivered: false, reason: 'wake_target_not_alive', pid: target.pid };
     }
 
-    // 3. 鉴权装配（key 值面变量读入·零回显零日志——结果面只报 hasToken）
+    // 3. 鉴权装配（W3-f 定谳：key 件=JSON 信封对象 {peerToken:"<32hex>",procStart?,pidDomain?}
+    //    ——119B=信封全长非裸 token；裸读全文当 token→harness pnl timing-safe 池校验必败
+    //    →unauthed_drop（W3-E 自证形 24ms 即断实锚）。safeParse 形：解析败/peerToken 缺失非串
+    //    →token=null+authParseFailed 标志（error 面 'auth_parse_failed' 出形）。值面零回显零日志照役。
     let token: string | null = null;
+    let authParseFailed = false;
     if (target.keyPath && exists(target.keyPath)) {
-      try { token = readUtf8(target.keyPath).trim() || null; } catch { token = null; }
+      try {
+        const envelope = JSON.parse(readUtf8(target.keyPath)) as { peerToken?: unknown };
+        const pt = typeof envelope?.peerToken === 'string' ? envelope.peerToken.trim() : '';
+        token = pt || null;
+        if (!token) authParseFailed = true;
+      } catch { token = null; authParseFailed = true; }
     }
 
     // 4. 管道投递——W3-e 三闸实锚六条照铸（§三.1-6）：①NDJSON 行分帧 ②auth 首行握手
@@ -270,14 +279,16 @@ export function createWakeAction(deps: WakeDeps = {}) {
         deliveredAt: sentAt,
       };
     } catch (err) {
-      // err 掩形（校形卷 §三.4 照役）——只出 errno 码形
+      // err 掩形（校形卷 §三.4 照役）——只出 errno 码形；W3-f：key 信封解析败→'auth_parse_failed' 出形
       return {
         delivered: false,
         reason: 'wake_delivery_failed',
         pid: target.pid,
         target: targetName,
         socketSuffix: maskSocketPath(target.socketPath),
-        error: err instanceof Error ? ((err as NodeJS.ErrnoException).code ?? 'delivery_error') : 'delivery_error',
+        error: authParseFailed
+          ? 'auth_parse_failed'
+          : err instanceof Error ? ((err as NodeJS.ErrnoException).code ?? 'delivery_error') : 'delivery_error',
       };
     } finally {
       // ⑥ 泄漏收口（W3-WAKE 修复③·§一.3）：任何路径 socket 必收口（conn destroy+临时 reply server close）

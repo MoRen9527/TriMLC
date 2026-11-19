@@ -27,7 +27,7 @@ function makeDeps(overrides: {
   const sessions = overrides.sessions ?? [
     { pid: 24572, name: 'bod', agent: 'Board', socketPath: '\\\\.\\pipe\\LOCAL\\cc-msg-4761258b48d225753185943dae7adf9d', status: 'idle' },
   ];
-  const keys = overrides.keys ?? { 24572: 'a'.repeat(64) + '\n' };
+  const keys = overrides.keys ?? { 24572: JSON.stringify({ peerToken: 'a'.repeat(64) }) + '\n' }; // W3-f 信封形
   const dir = 'X:\\mock-sessions';
   const entries = [
     ...sessions.map((s) => `${s.pid}.json`),
@@ -327,7 +327,7 @@ describe('W3-WAKE 真值连接器案组（s1-s4·真 socket 对拍·修复②回
           if (base === '24572.json') {
             return JSON.stringify({ name: 'bod', agent: 'Board', messagingSocketPath: srv.path, status: 'idle' });
           }
-          return keyToken;
+          return JSON.stringify({ peerToken: keyToken }); // W3-f 信封形
         },
         fileExists: (p: string) => (p.split(/[\\/]/).pop() ?? '').endsWith('.key'),
         pidAlive: () => true,
