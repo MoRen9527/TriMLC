@@ -3772,8 +3772,15 @@ export function createTriLCApp(env: TriLCEnv) {
             return;
           }
           if (req.method === 'POST') {
+            // abort 防御（R6 件②随件 2026-11-20）：客户端中途断连（hook 侧 timeout
+            // destroy 形等）→for-await 抛 ECONNRESET——旧形未捕获=daemon 崩级 rejection
+            //（诊断实锚）——静默收尾·请求作废零崩。
             const chunks: Buffer[] = [];
-            for await (const chunk of req) chunks.push(chunk as Buffer);
+            try {
+              for await (const chunk of req) chunks.push(chunk as Buffer);
+            } catch {
+              return; // body 中断=请求作废·零响应零崩
+            }
             let body: { message_id?: unknown } = {};
             try { body = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as typeof body; } catch { /* keep empty */ }
             const ok = typeof body.message_id === 'string' ? markRead(body.message_id) : false;
