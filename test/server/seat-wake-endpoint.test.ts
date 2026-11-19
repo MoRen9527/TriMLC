@@ -1,4 +1,4 @@
-// ── BOD 实时收件三级链 W2·POST /internal/v1/seat-seat-wake 端点白盒（W2-b 自测）──
+// ── BOD 实时收件三级链 W2·POST /internal/v1/seat-wake 端点白盒（W2-b 自测·W3-b 增 wired 形）──
 // 派工卷：docs/workflow/operating-records/2026-W47/trees/bod-wake-chain-20261120/
 //         cos-w2-wake-endpoint-dispatch-20261120.md（§二 W2-b·m-fsd 主刀）。
 //
@@ -29,6 +29,8 @@ import {
   clearWakeActionHandler,
   isWakeActionWired,
 } from '../../src/server/app.js';
+import { wireSeatWakeAction } from '../../src/server/seat-wake-wiring.js';
+import type { SocketConn } from '../../src/server/seat-wake-wiring.js';
 
 const WAKE_TOKEN = 'w2-b-wake-endpoint-fixed-token';
 
@@ -66,7 +68,7 @@ describe('W2 seat-wake 接线口单元层：set/clear/isWired', () => {
 
 // ══════════════════════ 端到端层：真起服过全局门 ══════════════════════
 
-describe('W2 seat-seat-wake 端点端到端：createTriLCApp 真实 HTTP（全局门族内·骨架期）', () => {
+describe('W2 seat-wake 端点端到端：createTriLCApp 真实 HTTP（全局门族内·骨架期）', () => {
   let app: ReturnType<typeof createTriLCApp>;
   let appPort: number;
   let tmpDataDir: string;
@@ -298,5 +300,79 @@ describe('W2 seat-seat-wake 端点端到端：createTriLCApp 真实 HTTP（全�
     });
     assert.equal(cfg.status, 200);
     assert.equal(cfg.json?.object, 'config.show');
+  });
+
+  // ── W3-b 增：真实接线模块端到端 wired 形（W3-a §二五步形·mock connector 零真管道写）──
+
+  it('e13 W3-b 真接线端到端：wireSeatWakeAction 注入 mock deps → 200 accepted:true wired:true delivered:true', async () => {
+    const mockDeps = {
+      sessionsDir: 'X:\\mock-sessions',
+      listDir: () => ['24572.json', '24572.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.key'],
+      readFileUtf8: (p: string) => {
+        const base = p.split(/[\\/]/).pop() ?? '';
+        if (base === '24572.json') {
+          return JSON.stringify({ name: 'bod', agent: 'Board', messagingSocketPath: '\\\\.\\pipe\\LOCAL\\cc-msg-mock0', status: 'idle' });
+        }
+        return 'b'.repeat(64);
+      },
+      fileExists: (p: string) => (p.split(/[\\/]/).pop() ?? '').endsWith('.key'),
+      pidAlive: () => true,
+      connectSocket: async (socketPath: string): Promise<SocketConn> => ({
+        write: () => {},
+        waitReply: async () => 'ACK',
+        destroy: () => {},
+      }),
+      connectTimeoutMs: 500,
+    };
+    wireSeatWakeAction(mockDeps);
+    try {
+      assert.equal(isWakeActionWired(), true);
+      const res = await rawRequest('/internal/v1/seat-wake', {
+        method: 'POST',
+        headers: { 'x-internal-token': WAKE_TOKEN },
+        body: JSON.stringify({ source: 'w3b-wiring', reason: 'wired-e2e' }),
+      });
+      assert.equal(res.status, 200);
+      assert.equal(res.json?.object, 'wake');
+      assert.equal(res.json?.accepted, true);
+      assert.equal(res.json?.wired, true);
+      assert.equal(res.json?.delivered, true);
+      assert.equal(res.json?.target, 'bod');
+      assert.equal(res.json?.pid, 24572);
+      assert.equal(res.json?.hasToken, true);
+      assert.ok(typeof res.json?.deliveredAt === 'string');
+      const flat = JSON.stringify(res.json);
+      assert.ok(!flat.includes('b'.repeat(64)), 'token 值面零回显（D-46）');
+      assert.ok(!flat.includes('mock0') === false || flat.includes('cc-msg-…'), 'socketPath 掩形出面');
+    } finally {
+      clearWakeActionHandler();
+    }
+  });
+
+  it('e14 W3-b reason 分层端到端：mock 连接拒 → 200 accepted:true wired:true delivered:false wake_delivery_failed', async () => {
+    const mockDeps = {
+      sessionsDir: 'X:\\mock-sessions',
+      listDir: () => ['24572.json'],
+      readFileUtf8: () => JSON.stringify({ name: 'bod', agent: 'Board', messagingSocketPath: '\\\\.\\pipe\\LOCAL\\cc-msg-mock1', status: 'idle' }),
+      fileExists: () => false,
+      pidAlive: () => true,
+      connectSocket: async () => { throw new Error('ECONNREFUSED'); },
+      connectTimeoutMs: 500,
+    };
+    wireSeatWakeAction(mockDeps);
+    try {
+      const res = await rawRequest('/internal/v1/seat-wake', {
+        method: 'POST',
+        headers: { 'x-internal-token': WAKE_TOKEN },
+        body: '{}',
+      });
+      assert.equal(res.status, 200);
+      assert.equal(res.json?.accepted, true);
+      assert.equal(res.json?.wired, true);
+      assert.equal(res.json?.delivered, false);
+      assert.equal(res.json?.reason, 'wake_delivery_failed');
+    } finally {
+      clearWakeActionHandler();
+    }
   });
 });

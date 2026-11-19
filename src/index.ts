@@ -3,6 +3,7 @@ import { readEnv } from './config/env.js';
 import { installCrashHandlers } from './crash-handler.js';
 import { LocalRuntimeDaemon } from './runtime/daemon.js';
 import { createTriLCApp } from './server/app.js';
+import { wireSeatWakeAction } from './server/seat-wake-wiring.js';
 import { PID_FILE } from './paths.js';
 // REQ-018: daemon owns its PID file — register after listen, unregister on exit.
 import { registerPid, unregisterPid } from './pidfile.js';
@@ -144,6 +145,11 @@ async function main(): Promise<void> {
 
   const app = createTriLCApp(env);
   await app.start();
+
+  // ── W3-b 接线：seat-wake 端点 wake 动作填装（W3-a 形定卷 §二五步形）──
+  // 装配零 IO（lazy·handler 调用时才扫 sessions 面）；回滚锚=clearWakeActionHandler。
+  wireSeatWakeAction();
+  console.log('[trilc] seat-wake wired');
 
   // REQ-018: the daemon registers its own PID after the server is listening.
   // The CLI no longer writes the PID file on spawn — this is the single
