@@ -3,11 +3,14 @@
 // 基础面：node:test + assert/strict（照现役套件形）；deps 全 mock 零真盘 IO。
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import * as net from 'node:net';
+import { randomUUID } from 'node:crypto';
 import {
   createWakeAction,
   resolveBodTargets,
   wireSeatWakeAction,
   isPidAlive,
+  defaultConnectSocket,
   type WakeDeps,
   type SocketConn,
 } from '../../src/server/seat-wake-wiring.js';
@@ -133,7 +136,7 @@ describe('W3 seat-wake 接线白盒（W3-a 五步形）', () => {
       assert.ok(!flat.includes('a'.repeat(64)), 'token 值面零回显（D-46）');
       assert.ok(!flat.includes('4761258b48d225753185943dae7adf9d'), 'socketPath 全值零回显（只出掩形尾段）');
     });
-    it('u10 全绿投递 → delivered:true+wired:true+status/hasToken 透传', async () => {
+    it('u10 全绿投递 → delivered:true+wired:true+status/hasToken 透传（W3-e 六条帧形断言）', async () => {
       const deps = makeDeps();
       const r = await createWakeAction(deps)({ source: 'probe', reason: 'wake' });
       assert.deepEqual(
@@ -143,16 +146,26 @@ describe('W3 seat-wake 接线白盒（W3-a 五步形）', () => {
         },
         { delivered: true, wired: true, target: 'bod', pid: 24572, status: 'idle', hasToken: true, replied: true, deliveredAt: '2026-11-20T00:00:00.000Z' },
       );
-      // 投递信封=peer 帧形断言（W3-d 校形卷 §三.1·协议形）
-      assert.equal(deps.written.length, 1);
-      const envelope = JSON.parse(deps.written[0].split('|')[1]) as Record<string, unknown>;
+      // 帧序断言（W3-e §三.2：auth 首行握手 → 消息帧）
+      assert.equal(deps.written.length, 2, 'token 在场=两帧（auth 握手+消息）');
+      assert.ok(deps.written[0].endsWith('\n'), 'auth 帧 \\n 尾（①闸 NDJSON 行分帧）');
+      assert.ok(deps.written[1].endsWith('\n'), '消息帧 \\n 尾（①闸 NDJSON 行分帧）');
+      const authFrame = JSON.parse(deps.written[0].split('|')[1]) as Record<string, unknown>;
+      assert.equal(authFrame.type, 'auth', 'auth 帧 type 字段（两候形主铸带 type）');
+      assert.equal(authFrame.token, 'a'.repeat(64), 'auth 帧 token=装配 key 值（mock 值·真值零回显锚在结果面/u9）');
+      const msgFrame = JSON.parse(deps.written[1].split('|')[1]) as Record<string, unknown>;
       assert.deepEqual(
-        { kind: envelope.kind, from: envelope.from, name: envelope.name },
-        { kind: 'peer', from: 'did:trilc-seat-wake', name: 'trilc-seat-wake' },
+        { type: msgFrame.type, fromMode: msgFrame.fromMode, name: msgFrame.name },
+        { type: 'user', fromMode: 'bypass', name: 'trilc-seat-wake' },
       );
-      assert.ok(String(envelope.body).startsWith('[seat-wake probe]'), 'body 信文自描述形（护栏①）');
-      assert.ok(!('auth' in envelope), 'auth 字段移除不进帧（W3-d 校形卷 §二·协议零 token 消费点·D-46 增强锚）');
-      assert.ok(!('fromMode' in envelope), 'fromMode 零写（honor 边界·absent 正形）');
+      assert.equal(msgFrame.msg_id, (r as { msgId?: string }).msgId, 'msg_id=结果面 msgId（peer_message_status 回执关联锚）');
+      assert.ok(
+        String(msgFrame.from).startsWith('\\\\.\\pipe\\LOCAL\\trilc-wake-reply-'),
+        'from=daemon 自建临时 reply socket（③ 塑形检查过形·did: 风险消解）',
+      );
+      assert.equal(msgFrame.body, msgFrame.message, 'body/message 双字段同值（字段名三候覆盖）');
+      assert.ok(String(msgFrame.body).startsWith('[seat-wake probe]'), 'body 信文自描述形（护栏①）');
+      assert.ok(!('token' in msgFrame), 'token 不进消息帧（auth 帧传输层专用·D-46）');
     });
     it('u11 busy 状态照发语义（W3-a §二.2·status 随结果面透传）', async () => {
       const deps = makeDeps({ sessions: [{ pid: 24572, name: 'bod', agent: 'Board', socketPath: '\\\\.\\pipe\\x', status: 'busy' }] });
@@ -160,11 +173,12 @@ describe('W3 seat-wake 接线白盒（W3-a 五步形）', () => {
       assert.equal(r.status, 'busy');
       assert.equal(r.delivered, true);
     });
-    it('u12 key 缺席 → hasToken:false 照投（装配面容错形）', async () => {
+    it('u12 key 缺席 → hasToken:false 照投（装配面容错形·零 auth 帧单帧投递）', async () => {
       const deps = makeDeps({ keys: {} });
       const r = await createWakeAction(deps)({});
       assert.equal(r.hasToken, false);
       assert.equal(r.delivered, true);
+      assert.equal(deps.written.length, 1, 'token 缺席=跳过 auth 握手（单消息帧）');
     });
   });
 
@@ -194,5 +208,149 @@ describe('W3 seat-wake 接线白盒（W3-a 五步形）', () => {
       // ——分支语义由 u8 pidAlive mock=false 承载，此案只钉布尔形契约。
       assert.equal(typeof isPidAlive(process.pid), 'boolean');
     });
+  });
+});
+
+// ── W3-WAKE 真值连接器案组（修复②·真 named pipe server 内存对拍·mock 掩盖家族教训钉补）──
+// 教训锚（W3-e §一+预勘卷 §二）：33 案白盒全走 mock connector→真值连接器内部状态机零覆盖→
+// settled 互斥重用永挂 bug 白盒不可见。s1 修复前必红（永挂→案级 3s 超时红）=回归钉——
+// 后续任何连接器状态机改动必过此案组。
+
+/** 真 named pipe 临时 server（收帧录制+行分帧 onLine 回调·close 全收口） */
+interface PipeServer {
+  path: string;
+  frames: string[];
+  close(): Promise<void>;
+}
+
+function startPipeServer(onLine: (line: string, sock: net.Socket) => void): Promise<PipeServer> {
+  const pipePath = `\\\\.\\pipe\\trilc-test-${randomUUID()}`;
+  const frames: string[] = [];
+  const sockets = new Set<net.Socket>();
+  const server = net.createServer((sock) => {
+    sockets.add(sock);
+    let buf = '';
+    sock.on('data', (chunk: Buffer) => {
+      buf += chunk.toString('utf8');
+      let idx: number;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx);
+        buf = buf.slice(idx + 1);
+        frames.push(line);
+        onLine(line, sock);
+      }
+    });
+    sock.on('close', () => sockets.delete(sock));
+    sock.on('error', () => {});
+  });
+  server.on('error', () => {});
+  return new Promise((resolve) => {
+    server.listen(pipePath, () => {
+      resolve({
+        path: pipePath,
+        frames,
+        close: async () => {
+          for (const s of sockets) s.destroy();
+          await new Promise<void>((res) => server.close(() => res()));
+        },
+      });
+    });
+  });
+}
+
+describe('W3-WAKE 真值连接器案组（s1-s4·真 socket 对拍·修复②回归钉）', () => {
+  it('s1 回执形：server 收帧回写 → waitReply resolve 该文本（修复前必红·回归钉）', { timeout: 3000 }, async () => {
+    const srv = await startPipeServer((_line, sock) => { sock.write('ACK ok\n'); });
+    try {
+      const conn = await defaultConnectSocket(srv.path);
+      conn.write('ping\n');
+      const reply = await conn.waitReply(2000);
+      conn.destroy();
+      assert.ok(reply !== null && reply.includes('ACK ok'), `回执面 resolve（实收=${JSON.stringify(reply)}）`);
+      assert.deepEqual(srv.frames, ['ping'], 'server 侧收帧录制对拍');
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('s2 超时形：server 静默保持 → waitReply 限时 resolve null（非永挂）', { timeout: 3000 }, async () => {
+    const srv = await startPipeServer(() => { /* 零回执 */ });
+    try {
+      const conn = await defaultConnectSocket(srv.path);
+      conn.write('ping\n');
+      const t0 = Date.now();
+      const reply = await conn.waitReply(400);
+      conn.destroy();
+      assert.equal(reply, null, '超时路径 resolve null');
+      assert.ok(Date.now() - t0 >= 350, 'timer 面 ~400ms 非即返');
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('s3 close 形：server 收帧即断 → close 路 resolve null（EPIPE/对端断族）', { timeout: 3000 }, async () => {
+    const srv = await startPipeServer((_line, sock) => { sock.destroy(); });
+    try {
+      const conn = await defaultConnectSocket(srv.path);
+      conn.write('ping\n');
+      const reply = await conn.waitReply(2000);
+      conn.destroy();
+      assert.equal(reply, null, 'close 路径 resolve（pendingText 空→null）');
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('s4 连接拒形：管道不存在 → connector reject（errno 码族面）', { timeout: 3000 }, async () => {
+    await assert.rejects(
+      defaultConnectSocket(`\\\\.\\pipe\\trilc-test-nonexistent-${randomUUID()}`),
+      (err: unknown) => {
+        const code = (err as NodeJS.ErrnoException).code;
+        return typeof code === 'string' && code.length > 0;
+      },
+    );
+  });
+
+  it('s5 真值投递端到端：wakeAction 全链真 socket（auth→msg 帧序+NDJSON 行分帧 server 侧对拍）', { timeout: 3000 }, async () => {
+    const srv = await startPipeServer((line, sock) => {
+      const f = JSON.parse(line) as Record<string, unknown>;
+      if (f.type === 'auth') sock.write(JSON.stringify({ type: 'auth_ok' }) + '\n');
+      else sock.write(JSON.stringify({ type: 'peer_message_status', orig_msg_id: f.msg_id, status: 'delivered' }) + '\n');
+    });
+    try {
+      const keyToken = 'c'.repeat(64);
+      const deps: WakeDeps = {
+        sessionsDir: 'X:\\mock-sessions',
+        listDir: () => ['24572.json', `24572.${keyToken}.key`],
+        readFileUtf8: (p: string) => {
+          const base = p.split(/[\\/]/).pop() ?? '';
+          if (base === '24572.json') {
+            return JSON.stringify({ name: 'bod', agent: 'Board', messagingSocketPath: srv.path, status: 'idle' });
+          }
+          return keyToken;
+        },
+        fileExists: (p: string) => (p.split(/[\\/]/).pop() ?? '').endsWith('.key'),
+        pidAlive: () => true,
+        nowIso: () => '2026-11-20T00:00:00.000Z',
+      };
+      const r = await createWakeAction(deps)({ source: 's5', reason: 'true-socket-e2e' });
+      assert.equal(r.delivered, true, '真值全链投递成');
+      assert.equal((r as { replied?: boolean }).replied, true, '回执信息面（真 socket 回写面）');
+      // server 侧按行分帧收到 auth→消息 帧序（①闸 NDJSON 真值解析对拍）
+      assert.equal(srv.frames.length, 2, '两帧按行分帧（零粘连零截断）');
+      const f0 = JSON.parse(srv.frames[0]) as Record<string, unknown>;
+      const f1 = JSON.parse(srv.frames[1]) as Record<string, unknown>;
+      assert.equal(f0.type, 'auth', '首行=auth 帧（②闸握手序）');
+      assert.equal(f0.token, keyToken, 'auth token=key 装配值（mock 值）');
+      assert.equal(f1.type, 'user', '次行=消息帧');
+      assert.equal(f1.fromMode, 'bypass', 'fromMode 写入（③闸）');
+      assert.equal((r as { msgId?: string }).msgId, f1.msg_id, 'msg_id 关联一致');
+      assert.equal(
+        String(f1.from).startsWith('\\\\.\\pipe\\LOCAL\\trilc-wake-reply-'), true,
+        'from=自建临时 reply socket 形',
+      );
+    } finally {
+      await srv.close();
+    }
   });
 });

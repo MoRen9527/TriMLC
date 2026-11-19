@@ -9,19 +9,29 @@
 //   - 名址零命中        : wake_target_not_found
 //   - 名址多命中        : wake_target_ambiguous
 //   - pid 不存活        : wake_target_not_alive
-//   - 投递败（连/写/超时）: wake_delivery_failed    （候选定名·毕报载明候 W3-c 门禁对表铸定）
+//   - 投递败（连/写/超时）: wake_delivery_failed    （W3-c 门禁卷对表铸定·定谳字面）
 // D-46 值面纪律: <pid>.<64hex>.key 键件值面（messaging token）变量读入零回显零日志零落卷；
 //   结果面只报 hasToken 布尔形，socketPath 只回传掩形尾段（suffix 8 位）；err 掩形只出 errno 码。
-// wire 协议形（2026-11-20 W3-d 校形卷定谳·claude.exe 二进制 schema 破译）: 投递信封=peer 帧形
-//   {kind:'peer', from:'did:trilc-seat-wake', name, body:'[seat-wake probe] …'}——kind 判别必需
-//   （无 kind=absent 忽略）·帧内零 token 消费点（auth 不进帧·key 值面真实用途=非管道帧域·
-//   候远期勘不阻链）·fromMode 零写（honor 边界 absent 正形）。
+// wire 协议形（2026-11-20 W3-e 三闸实锚·claude.exe v2.1.328 二进制破译
+//   cto-w3e-consumption-semantics-survey-20261120 §二/§三 六条照铸）:
+//   ①NDJSON 行分帧——每帧尾 \n 必需（firstLineDeadlineMs=30000 无完整首行→30s 静默 destroy）；
+//   ②auth 首行握手——连接后先发 {type:'auth', token:<peerToken>}（peerToken=key 件 119B 值真身
+//   定谳·activeTokens 池校验；D-46 值面零回显零落卷照役）·authRequired 时未鉴权非 auth 帧→丢+断连；
+//   ③分类闸 fromMode:"bypass" 写入（held→直投·honor 实效候复拍判；undeclared→held 候 idle）。
+//   消息帧形={type:'user', msg_id:<uuid>, from:<自建临时 socket>, fromMode:'bypass', name, body, message}
+//   ——from=daemon 自建临时监听 socket（\\.\pipe\LOCAL\trilc-wake-reply-<uuid>·塑形检查过·did: 风险
+//   消解）·msg_id 关联 peer_message_status 回执（held/delivered·waitReply 可等真回执）·body/message
+//   双字段同值（字段名三候覆盖·复拍指纹收敛后裁单）。
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as net from 'node:net';
+import { randomUUID } from 'node:crypto';
 import { setWakeActionHandler } from './app.js';
 import type { WakeActionPayload, WakeActionResult } from './app.js';
+
+/** seat-wake payload 扩展形（C 自证形参数化·app.ts 形检零触——target 族透传字段） */
+type SeatWakePayload = WakeActionPayload & { target?: string; targetAgent?: string };
 
 /** sessions 注册件解析出的 bod 目标形（socketPath 只以掩形出本模块边界） */
 export interface BodTarget {
@@ -70,8 +80,10 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-/** 第 1 步 名址解析：扫 sessions/*.json → name=="bod" && agent=="Board" 双断言 */
-export function resolveBodTargets(deps: WakeDeps = {}): BodTarget[] {
+/** 第 1 步 名址解析：扫 sessions/*.json → name+agent 双断言
+ *  （C 自证形参数化：targetName/targetAgent 可参·bod 主链缺省 name='bod' && agent='Board'
+ *   语义零变——W3-a §一 双名分野定谳承·自证形与 bod 真发共用同一解析/帧构造路径） */
+export function resolveWakeTargets(deps: WakeDeps = {}, targetName = 'bod', targetAgent = 'Board'): BodTarget[] {
   const dir = deps.sessionsDir ?? defaultSessionsDir();
   const readUtf8 = deps.readFileUtf8 ?? ((p: string) => fs.readFileSync(p, 'utf8'));
   const exists = deps.fileExists ?? ((p: string) => fs.existsSync(p));
@@ -101,7 +113,7 @@ export function resolveBodTargets(deps: WakeDeps = {}): BodTarget[] {
     } catch {
       continue; // 坏件跳过（不投递不可解析注册面）
     }
-    if (reg.name !== 'bod' || reg.agent !== 'Board') continue; // 双断言（防同名+防漂移）
+    if (reg.name !== targetName || reg.agent !== targetAgent) continue; // 双断言（防同名+防漂移）
     if (typeof reg.messagingSocketPath !== 'string' || reg.messagingSocketPath.length === 0) continue;
     targets.push({
       pid,
@@ -113,42 +125,61 @@ export function resolveBodTargets(deps: WakeDeps = {}): BodTarget[] {
   return targets;
 }
 
+/** 兼容别名（bod 主链语义原形·W3-b 白盒既有引用面零断） */
+export function resolveBodTargets(deps: WakeDeps = {}): BodTarget[] {
+  return resolveWakeTargets(deps, 'bod', 'Board');
+}
+
 function maskSocketPath(p: string): string {
   const tail = p.slice(-8);
   return `cc-msg-…${tail}`;
 }
 
-/** 第 4 步 真值连接器：net.connect named pipe → SocketConn（最小双工形） */
+/** 第 4 步 真值连接器：net.connect named pipe → SocketConn（NDJSON 双工形·W3-WAKE 修复版）
+ *  修复（CTO W3-e 卷 §一 裁决铸形）：settled 拆分=connectSettled/replySettled 两标志分立——
+ *  旧形单 settled 互斥重用（connect settle 置 true→waitReply guard 恒 false→四路全闸死→永挂）
+ *  ——真发首拍断层实锚（sde-w3d2 卷 §三）·本席 W3-b 手笔自领。 */
 export const defaultConnectSocket: SocketConnector = (socketPath: string) =>
   new Promise<SocketConn>((resolve, reject) => {
     const sock = net.connect(socketPath);
     const pending: Buffer[] = [];
+    let connectSettled = false; // guard ①：connect settle 竞争（resolve vs reject）·唯一职责
     let replyResolve: ((v: string | null) => void) | null = null;
-    let settled = false;
 
     sock.on('connect', () => {
-      settle({
+      if (connectSettled) return;
+      connectSettled = true;
+      resolve({
         write: (data: string) => sock.write(data),
         waitReply: (ms: number) =>
           new Promise<string | null>((res) => {
-            replyResolve = (v) => { if (!settled) { settled = true; res(v); } };
-            const timer = setTimeout(() => replyResolve?.(null), ms);
+            // guard ②：replySettled 局部守卫——零共享 connectSettled（修复位）
+            let replySettled = false;
+            let timer: NodeJS.Timeout | undefined;
+            const done = (v: string | null) => {
+              if (replySettled) return;
+              replySettled = true;
+              if (timer) clearTimeout(timer); // 防 resolve 后 timer 空放（W3-e §一.1）
+              res(v);
+            };
+            timer = setTimeout(() => done(pendingText() || null), ms);
             timer.unref?.();
+            replyResolve = done;
           }),
         destroy: () => sock.destroy(),
       });
     });
     sock.on('data', (chunk: Buffer) => {
       pending.push(chunk);
-      replyResolve?.(Buffer.concat(pending).toString('utf8'));
+      replyResolve?.(pendingText());
     });
-    sock.on('close', () => replyResolve?.(Buffer.concat(pending).toString('utf8') || null));
+    sock.on('close', () => replyResolve?.(pendingText() || null));
     sock.on('error', (err: Error) => {
       replyResolve?.(null);
-      if (!settled) reject(err);
+      if (!connectSettled) { connectSettled = true; reject(err); }
     });
 
-    function settle(conn: SocketConn) { settled = true; resolve(conn); }
+    function pendingText() { return Buffer.concat(pending).toString('utf8'); }
   });
 
 /**
@@ -166,10 +197,14 @@ export function createWakeAction(deps: WakeDeps = {}) {
     const alive = deps.pidAlive ?? isPidAlive;
     const timeoutMs = deps.connectTimeoutMs ?? 5000;
 
-    // 1. 名址解析（双断言·零/多命中 fail-visible）
-    const hits = resolveBodTargets(deps);
-    if (hits.length === 0) return { delivered: false, reason: 'wake_target_not_found' };
-    if (hits.length > 1) return { delivered: false, reason: 'wake_target_ambiguous', matches: hits.length };
+    // 1. 名址解析（C 参数化：payload.target 缺省 'bod'·payload.targetAgent 缺省 'Board'
+    //    ——bod 主链语义零变·自证形探针换目标名共用同一解析路径）
+    const p = payload as SeatWakePayload;
+    const targetName = typeof p?.target === 'string' && p.target.length > 0 ? p.target : 'bod';
+    const targetAgent = typeof p?.targetAgent === 'string' && p.targetAgent.length > 0 ? p.targetAgent : 'Board';
+    const hits = resolveWakeTargets(deps, targetName, targetAgent);
+    if (hits.length === 0) return { delivered: false, reason: 'wake_target_not_found', target: targetName };
+    if (hits.length > 1) return { delivered: false, reason: 'wake_target_ambiguous', matches: hits.length, target: targetName };
     const target = hits[0];
 
     // 2. 活态守门（busy=在轮中信会排队照发·idle=需唤醒正形目标态——两态均投递·status 随结果面）
@@ -183,44 +218,71 @@ export function createWakeAction(deps: WakeDeps = {}) {
       try { token = readUtf8(target.keyPath).trim() || null; } catch { token = null; }
     }
 
-    // 4. 管道投递——信封=peer 帧形（W3-d 校形卷 cto-w3d-wire-protocol-survey-20261120 §三.1
-    //    ·claude.exe zod schema 破译：kind 判别必需·占位无 kind=当 absent 忽略唤醒不成）。
-    //    auth 不进帧（§二：协议无 payload token 消费点·鉴权=Kernel verifiedPeerPid 面）·
-    //    fromMode 零写（honor 条件=host stdin 注入形·socket 直写不满足·absent 最诚实形）。
+    // 4. 管道投递——W3-e 三闸实锚六条照铸（§三.1-6）：①NDJSON 行分帧 ②auth 首行握手
+    //    ③from=自建临时 socket ④fromMode:"bypass" ⑤type:"user"+msg_id 帧形 ⑥destroy/收口入 finally。
+    //    C 参数化：bod 真发与自证形探针（payload.target）共用同一帧构造路径（本函数体零分叉）。
+    const reasonText = typeof payload?.reason === 'string' ? payload.reason : 'wake';
+    const sentAt = nowIso();
+    const bodyText = `[seat-wake probe] ${reasonText} @${sentAt}`;
+    // ③ from=daemon 自建临时监听 socket（\\.\pipe\LOCAL\trilc-wake-reply-<uuid>）——
+    //    过对端塑形检查（did: 非本机 socket namespace 形→该路径 drop 风险消解）·回执可达面。
+    const replySocketPath = `\\\\.\\pipe\\LOCAL\\trilc-wake-reply-${randomUUID()}`;
+    const replyServer = net.createServer();
+    let conn: SocketConn | null = null;
     try {
-      const conn = await connect(target.socketPath);
-      const envelope = JSON.stringify({
-        kind: 'peer',
-        from: 'did:trilc-seat-wake',
-        name: 'trilc-seat-wake',
-        body: `[seat-wake probe] ${typeof payload?.reason === 'string' ? payload.reason : 'wake'} @${nowIso()}`,
+      await new Promise<void>((resolve, reject) => {
+        replyServer.once('error', reject);
+        replyServer.listen(replySocketPath, () => resolve());
       });
-      conn.write(envelope);
+      replyServer.on('error', () => {}); // listen 后 err 静默（对端回信中断面·不挂 daemon）
+
+      conn = await connect(target.socketPath);
+      // ② auth 首行握手（token 装配面有则发·无则跳过如实由 hasToken 面）——两候形主铸带
+      //    type（fnl 判定若查 type 过·若只取 S.token 字段亦过；D-46 值面零回显零落卷照役）
+      if (token) conn.write(JSON.stringify({ type: 'auth', token }) + '\n');
+      // ① NDJSON 行尾 + ④⑤ fromMode/type/msg_id 帧形（body/message 双字段同值=字段名三候覆盖）
+      const msgId = randomUUID();
+      conn.write(
+        JSON.stringify({
+          type: 'user',
+          msg_id: msgId,
+          from: replySocketPath,
+          fromMode: 'bypass',
+          name: 'trilc-seat-wake',
+          body: bodyText,
+          message: bodyText,
+        }) + '\n',
+      );
       const reply = await conn.waitReply(2000);
-      conn.destroy();
-      // 5. 结果面——replied 语义注记（校形卷 §三.3）：harness 收帧后 fire-and-forget 概率形
-      //    （schema 无 ack 帧面）——投递成判据=write 成功+连接保持到 destroy；
-      //    replied=false≠投递败（waitReply 仅信息面）。
+      // 5. 结果面——回执语义（W3-e §二 读数）：harness 有 peer_message_status 回执帧
+      //    （held/delivered·按 msg_id/orig_msg_id 关联）——waitReply 等真回执信息面；
+      //    投递成判据=write 成+连接保持到 destroy；replied=false≠投递败（held 形）。
       return {
         delivered: true,
         wired: true,
-        target: 'bod',
+        target: targetName,
         pid: target.pid,
         status: target.status,
         hasToken: token !== null,
         socketSuffix: maskSocketPath(target.socketPath),
+        msgId,
         replied: reply !== null,
-        deliveredAt: nowIso(),
+        deliveredAt: sentAt,
       };
     } catch (err) {
-      // err 掩形（校形卷 §三.4·门禁卷 §三.4 socketPath 全名泄漏面）——只出 errno 码形
+      // err 掩形（校形卷 §三.4 照役）——只出 errno 码形
       return {
         delivered: false,
         reason: 'wake_delivery_failed',
         pid: target.pid,
+        target: targetName,
         socketSuffix: maskSocketPath(target.socketPath),
         error: err instanceof Error ? ((err as NodeJS.ErrnoException).code ?? 'delivery_error') : 'delivery_error',
       };
+    } finally {
+      // ⑥ 泄漏收口（W3-WAKE 修复③·§一.3）：任何路径 socket 必收口（conn destroy+临时 reply server close）
+      conn?.destroy();
+      try { replyServer.close(); } catch { /* 已关形容忍 */ }
     }
   };
 }
