@@ -121,8 +121,11 @@ describe('W3 seat-wake 接线白盒（W3-a 五步形）', () => {
       const r = await createWakeAction(deps)({});
       assert.deepEqual({ delivered: r.delivered, reason: r.reason, pid: r.pid }, { delivered: false, reason: 'wake_target_not_alive', pid: 24572 });
     });
-    it('u9 连接拒 → wake_delivery_failed（候选定名·值面零 token 零全 socketPath）', async () => {
-      const deps = makeDeps({ connect: async () => { throw new Error('ECONNREFUSED'); } });
+    it('u9 连接拒 → wake_delivery_failed（候选定名·值面零 token 零全 socketPath·err 掩形只出 errno 码）', async () => {
+      // mock 抛真 ErrnoException 形（net.connect 真错误带 .code）——掩形面 code 在→出 code
+      const refused = new Error('connect ECONNREFUSED (mock)') as NodeJS.ErrnoException;
+      refused.code = 'ECONNREFUSED';
+      const deps = makeDeps({ connect: async () => { throw refused; } });
       const r = await createWakeAction(deps)({ source: 'probe' });
       assert.deepEqual({ delivered: r.delivered, reason: r.reason }, { delivered: false, reason: 'wake_delivery_failed' });
       assert.equal((r as { error: string }).error, 'ECONNREFUSED');
@@ -140,11 +143,16 @@ describe('W3 seat-wake 接线白盒（W3-a 五步形）', () => {
         },
         { delivered: true, wired: true, target: 'bod', pid: 24572, status: 'idle', hasToken: true, replied: true, deliveredAt: '2026-11-20T00:00:00.000Z' },
       );
-      // 投递信封最小形断言：占位信封含自描述 source/auth 面（协议校形归 W3-d）
+      // 投递信封=peer 帧形断言（W3-d 校形卷 §三.1·协议形）
       assert.equal(deps.written.length, 1);
       const envelope = JSON.parse(deps.written[0].split('|')[1]) as Record<string, unknown>;
-      assert.equal(envelope.source, 'trilc-seat-wake');
-      assert.equal(typeof envelope.auth, 'string');
+      assert.deepEqual(
+        { kind: envelope.kind, from: envelope.from, name: envelope.name },
+        { kind: 'peer', from: 'did:trilc-seat-wake', name: 'trilc-seat-wake' },
+      );
+      assert.ok(String(envelope.body).startsWith('[seat-wake probe]'), 'body 信文自描述形（护栏①）');
+      assert.ok(!('auth' in envelope), 'auth 字段移除不进帧（W3-d 校形卷 §二·协议零 token 消费点·D-46 增强锚）');
+      assert.ok(!('fromMode' in envelope), 'fromMode 零写（honor 边界·absent 正形）');
     });
     it('u11 busy 状态照发语义（W3-a §二.2·status 随结果面透传）', async () => {
       const deps = makeDeps({ sessions: [{ pid: 24572, name: 'bod', agent: 'Board', socketPath: '\\\\.\\pipe\\x', status: 'busy' }] });

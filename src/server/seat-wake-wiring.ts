@@ -11,10 +11,11 @@
 //   - pid 不存活        : wake_target_not_alive
 //   - 投递败（连/写/超时）: wake_delivery_failed    （候选定名·毕报载明候 W3-c 门禁对表铸定）
 // D-46 值面纪律: <pid>.<64hex>.key 键件值面（messaging token）变量读入零回显零日志零落卷；
-//   结果面只报 hasToken 布尔形，socketPath 只回传掩形尾段（suffix 8 位）。
-// 技术债如实: 管道 wire 格式=harness 内部协议（peerProtocol:1）非公开契约——本模块
-//   投递信封为占位最小形（自描述 source/reason/sentAt），真发协议勘定归 W3-d 探针窗
-//   （W3-a §三案 2·六护栏+BOD 在场窗），真发前须校形。
+//   结果面只报 hasToken 布尔形，socketPath 只回传掩形尾段（suffix 8 位）；err 掩形只出 errno 码。
+// wire 协议形（2026-11-20 W3-d 校形卷定谳·claude.exe 二进制 schema 破译）: 投递信封=peer 帧形
+//   {kind:'peer', from:'did:trilc-seat-wake', name, body:'[seat-wake probe] …'}——kind 判别必需
+//   （无 kind=absent 忽略）·帧内零 token 消费点（auth 不进帧·key 值面真实用途=非管道帧域·
+//   候远期勘不阻链）·fromMode 零写（honor 边界 absent 正形）。
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -182,19 +183,24 @@ export function createWakeAction(deps: WakeDeps = {}) {
       try { token = readUtf8(target.keyPath).trim() || null; } catch { token = null; }
     }
 
-    // 4. 管道投递（连接→写→读回执/关闭 最小形·占位信封·协议校形归 W3-d 探针窗）
+    // 4. 管道投递——信封=peer 帧形（W3-d 校形卷 cto-w3d-wire-protocol-survey-20261120 §三.1
+    //    ·claude.exe zod schema 破译：kind 判别必需·占位无 kind=当 absent 忽略唤醒不成）。
+    //    auth 不进帧（§二：协议无 payload token 消费点·鉴权=Kernel verifiedPeerPid 面）·
+    //    fromMode 零写（honor 条件=host stdin 注入形·socket 直写不满足·absent 最诚实形）。
     try {
       const conn = await connect(target.socketPath);
       const envelope = JSON.stringify({
-        source: 'trilc-seat-wake',
-        reason: typeof payload?.reason === 'string' ? payload.reason : 'wake',
-        sentAt: nowIso(),
-        auth: token ?? undefined,
+        kind: 'peer',
+        from: 'did:trilc-seat-wake',
+        name: 'trilc-seat-wake',
+        body: `[seat-wake probe] ${typeof payload?.reason === 'string' ? payload.reason : 'wake'} @${nowIso()}`,
       });
       conn.write(envelope);
       const reply = await conn.waitReply(2000);
       conn.destroy();
-      // 5. 结果面
+      // 5. 结果面——replied 语义注记（校形卷 §三.3）：harness 收帧后 fire-and-forget 概率形
+      //    （schema 无 ack 帧面）——投递成判据=write 成功+连接保持到 destroy；
+      //    replied=false≠投递败（waitReply 仅信息面）。
       return {
         delivered: true,
         wired: true,
@@ -207,12 +213,13 @@ export function createWakeAction(deps: WakeDeps = {}) {
         deliveredAt: nowIso(),
       };
     } catch (err) {
+      // err 掩形（校形卷 §三.4·门禁卷 §三.4 socketPath 全名泄漏面）——只出 errno 码形
       return {
         delivered: false,
         reason: 'wake_delivery_failed',
         pid: target.pid,
         socketSuffix: maskSocketPath(target.socketPath),
-        error: err instanceof Error ? err.message : String(err),
+        error: err instanceof Error ? ((err as NodeJS.ErrnoException).code ?? 'delivery_error') : 'delivery_error',
       };
     }
   };

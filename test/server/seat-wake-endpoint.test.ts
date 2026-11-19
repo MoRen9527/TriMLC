@@ -343,7 +343,7 @@ describe('W2 seat-wake 端点端到端：createTriLCApp 真实 HTTP（全局门�
       assert.ok(typeof res.json?.deliveredAt === 'string');
       const flat = JSON.stringify(res.json);
       assert.ok(!flat.includes('b'.repeat(64)), 'token 值面零回显（D-46）');
-      assert.ok(!flat.includes('mock0') === false || flat.includes('cc-msg-…'), 'socketPath 掩形出面');
+      assert.ok(flat.includes('cc-msg-…'), 'socketPath 掩形出面（全名零泄漏）');
     } finally {
       clearWakeActionHandler();
     }
