@@ -1,4 +1,4 @@
-// ── BOD 实时收件三级链 W2·POST /internal/v1/wake 端点白盒（W2-b 自测）──
+// ── BOD 实时收件三级链 W2·POST /internal/v1/seat-seat-wake 端点白盒（W2-b 自测）──
 // 派工卷：docs/workflow/operating-records/2026-W47/trees/bod-wake-chain-20261120/
 //         cos-w2-wake-endpoint-dispatch-20261120.md（§二 W2-b·m-fsd 主刀）。
 //
@@ -34,7 +34,7 @@ const WAKE_TOKEN = 'w2-b-wake-endpoint-fixed-token';
 
 // ══════════════════════ 单元层：接线口三导出 ══════════════════════
 
-describe('W2 wake 接线口单元层：set/clear/isWired', () => {
+describe('W2 seat-wake 接线口单元层：set/clear/isWired', () => {
   after(() => {
     clearWakeActionHandler(); // 兜底还原，防泄漏至端到端层
   });
@@ -66,7 +66,7 @@ describe('W2 wake 接线口单元层：set/clear/isWired', () => {
 
 // ══════════════════════ 端到端层：真起服过全局门 ══════════════════════
 
-describe('W2 wake 端点端到端：createTriLCApp 真实 HTTP（全局门族内·骨架期）', () => {
+describe('W2 seat-seat-wake 端点端到端：createTriLCApp 真实 HTTP（全局门族内·骨架期）', () => {
   let app: ReturnType<typeof createTriLCApp>;
   let appPort: number;
   let tmpDataDir: string;
@@ -142,7 +142,7 @@ describe('W2 wake 端点端到端：createTriLCApp 真实 HTTP（全局门族内
   });
 
   it('e1 正向·未接线·空 body：200 {object:wake, accepted:false, wired:false, reason:wake_action_not_wired}（骨架值面完工判据形）', async () => {
-    const res = await rawRequest('/internal/v1/wake', {
+    const res = await rawRequest('/internal/v1/seat-wake', {
       method: 'POST',
       headers: { 'x-internal-token': WAKE_TOKEN },
     });
@@ -151,7 +151,7 @@ describe('W2 wake 端点端到端：createTriLCApp 真实 HTTP（全局门族内
   });
 
   it('e2 正向·未接线·{source,reason} body：同形 accepted:false（骨架期字段宽松容忍）', async () => {
-    const res = await rawRequest('/internal/v1/wake', {
+    const res = await rawRequest('/internal/v1/seat-wake', {
       method: 'POST',
       headers: { 'x-internal-token': WAKE_TOKEN, 'content-type': 'application/json' },
       body: JSON.stringify({ source: 'sg-hook', reason: 'bod-inbox-notify' }),
@@ -161,13 +161,13 @@ describe('W2 wake 端点端到端：createTriLCApp 真实 HTTP（全局门族内
   });
 
   it('e3 负向·无 token：401 unauthorized（全局门族自动覆盖·零新增鉴权面实证）', async () => {
-    const res = await rawRequest('/internal/v1/wake', { method: 'POST' });
+    const res = await rawRequest('/internal/v1/seat-wake', { method: 'POST' });
     assert.equal(res.status, 401);
     assert.deepEqual(res.json, { error: 'unauthorized: missing or invalid X-Internal-Token' });
   });
 
   it('e4 负向·伪 token：401 unauthorized 同文案', async () => {
-    const res = await rawRequest('/internal/v1/wake', {
+    const res = await rawRequest('/internal/v1/seat-wake', {
       method: 'POST',
       headers: { 'x-internal-token': 'attacker-supplied-garbage' },
     });
@@ -179,7 +179,7 @@ describe('W2 wake 端点端到端：createTriLCApp 真实 HTTP（全局门族内
     const prev = process.env.TRILC_INTERNAL_TOKEN;
     delete process.env.TRILC_INTERNAL_TOKEN;
     try {
-      const res = await rawRequest('/internal/v1/wake', { method: 'POST' });
+      const res = await rawRequest('/internal/v1/seat-wake', { method: 'POST' });
       assert.equal(res.status, 401);
       assert.deepEqual(res.json, { error: 'internal_auth_disabled' });
     } finally {
@@ -189,7 +189,7 @@ describe('W2 wake 端点端到端：createTriLCApp 真实 HTTP（全局门族内
   });
 
   it('e6 形检·坏 JSON body：400 invalid_json_body', async () => {
-    const res = await rawRequest('/internal/v1/wake', {
+    const res = await rawRequest('/internal/v1/seat-wake', {
       method: 'POST',
       headers: { 'x-internal-token': WAKE_TOKEN, 'content-type': 'application/json' },
       body: '{not-valid-json',
@@ -199,7 +199,7 @@ describe('W2 wake 端点端到端：createTriLCApp 真实 HTTP（全局门族内
   });
 
   it('e7 形检·JSON 非 object（数组）：400 payload_must_be_object', async () => {
-    const res = await rawRequest('/internal/v1/wake', {
+    const res = await rawRequest('/internal/v1/seat-wake', {
       method: 'POST',
       headers: { 'x-internal-token': WAKE_TOKEN },
       body: '[1,2,3]',
@@ -209,7 +209,7 @@ describe('W2 wake 端点端到端：createTriLCApp 真实 HTTP（全局门族内
   });
 
   it('e8 形检·source/reason 非串：400 source_must_be_string / reason_must_be_string', async () => {
-    const r1 = await rawRequest('/internal/v1/wake', {
+    const r1 = await rawRequest('/internal/v1/seat-wake', {
       method: 'POST',
       headers: { 'x-internal-token': WAKE_TOKEN },
       body: JSON.stringify({ source: 42 }),
@@ -217,7 +217,7 @@ describe('W2 wake 端点端到端：createTriLCApp 真实 HTTP（全局门族内
     assert.equal(r1.status, 400);
     assert.deepEqual(r1.json, { error: 'source_must_be_string' });
 
-    const r2 = await rawRequest('/internal/v1/wake', {
+    const r2 = await rawRequest('/internal/v1/seat-wake', {
       method: 'POST',
       headers: { 'x-internal-token': WAKE_TOKEN },
       body: JSON.stringify({ reason: [] }),
@@ -227,7 +227,7 @@ describe('W2 wake 端点端到端：createTriLCApp 真实 HTTP（全局门族内
   });
 
   it('e9 方法错·GET：非 200（路由 POST-only·实读形断言）', async () => {
-    const res = await rawRequest('/internal/v1/wake', {
+    const res = await rawRequest('/internal/v1/seat-wake', {
       method: 'GET',
       headers: { 'x-internal-token': WAKE_TOKEN },
     });
@@ -244,7 +244,7 @@ describe('W2 wake 端点端到端：createTriLCApp 真实 HTTP（全局门族内
     });
     try {
       assert.equal(isWakeActionWired(), true);
-      const res = await rawRequest('/internal/v1/wake', {
+      const res = await rawRequest('/internal/v1/seat-wake', {
         method: 'POST',
         headers: { 'x-internal-token': WAKE_TOKEN },
         body: JSON.stringify({ source: 'w2a-form', reason: 'wired-test' }),
@@ -262,7 +262,7 @@ describe('W2 wake 端点端到端：createTriLCApp 真实 HTTP（全局门族内
       throw new Error('stub-channel-explosion');
     });
     try {
-      const res = await rawRequest('/internal/v1/wake', {
+      const res = await rawRequest('/internal/v1/seat-wake', {
         method: 'POST',
         headers: { 'x-internal-token': WAKE_TOKEN },
         body: '{}',

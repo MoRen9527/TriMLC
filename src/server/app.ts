@@ -236,10 +236,14 @@ function hostCandidateAllowed(candidate: string, entries: HostAllowEntry[]): boo
   return false;
 }
 
-// ── Wake 推唤端点接线口（BOD 实时收件三级链 W2·派工卷
+// ── Seat-wake 推唤端点接线口（BOD 实时收件三级链 W2·派工卷
 //    cos-w2-wake-endpoint-dispatch-20261120 §二 W2-b）──
-// 撞词消歧：本接线口服务 POST /internal/v1/wake 推唤信号消费端点（BOD 会话
-// 推唤链），与 heartbeat-wake（心跳唤醒模块·app 成员 this.wake）无关联。
+// 撞词消歧（双族）：本接线口服务 POST /internal/v1/seat-wake 推唤信号消费端点
+// （BOD 会话推唤链）——①与 heartbeat-wake（心跳唤醒模块·app 成员 this.wake）
+// 无关联；②与 healthz/power 面 wake 字段族（lastWakeSeenAt/lastHandledWakeAt/
+// wakePollFailures/lastWakeReport=电源面睡眠唤醒上报语义·在役）无关联——
+// 端点定名 seat-wake 随 CTO W2-a 勘定卷建议+COS 采纳改名令
+// （W2-a 勘定卷 cto-w2a-channel-survey-20261120.md §二②·COS D-39 径裁 2026-11-20）。
 // 骨架期 handler 为空 = 端点可用但 accepted:false（wake_action_not_wired）；
 // 接线面（唤 bod 会话通道形·cc-socks/tmux send-keys 候勘）候 m-cto W2-a
 // 形定卷在树后由接线施工填（W3 会话唤醒接线段），本文件只留可插接口位。
@@ -2091,7 +2095,7 @@ export function createTriLCApp(env: TriLCEnv) {
           return;
         }
 
-        // ── POST /internal/v1/wake（BOD 实时收件三级链 W2 推唤信号消费口）──
+        // ── POST /internal/v1/seat-wake（BOD 实时收件三级链 W2 推唤信号消费口）──
         // 派工卷 cos-w2-wake-endpoint-dispatch-20261120 §二 W2-b。鉴权照现役
         // 全局门族：本路由置于 X-Internal-Token 门后即自动受门（零新增鉴权面·
         // 现役顺序契约 Host/Origin 403 → token 401 → 路由 原样覆盖）。骨架期
@@ -2099,7 +2103,7 @@ export function createTriLCApp(env: TriLCEnv) {
         // reason:'wake_action_not_wired'}（端点可用可探·值面完工判据形）；
         // 接线后 handler 结果透传 accepted:true。撞词消歧：与 heartbeat-wake
         // （this.wake 心跳唤醒模块）无关联。
-        if (req.url === '/internal/v1/wake' && req.method === 'POST') {
+        if (req.url === '/internal/v1/seat-wake' && req.method === 'POST') {
           try {
             const chunks: Buffer[] = [];
             for await (const chunk of req) chunks.push(chunk);
