@@ -2021,7 +2021,11 @@ export function createTriLCApp(env: TriLCEnv) {
           const fadeStore = fadeBoot.store;
           try {
             const chunks: Buffer[] = [];
-            for await (const chunk of req) chunks.push(chunk);
+            try {
+              for await (const chunk of req) chunks.push(chunk);
+            } catch {
+              return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
+            }
             const raw = Buffer.concat(chunks).toString('utf-8');
             let parsed: { runId?: unknown; idempotencyKey?: unknown; treeDir?: unknown } = {};
             if (raw.length > 0) parsed = JSON.parse(raw) as typeof parsed;
@@ -2106,7 +2110,11 @@ export function createTriLCApp(env: TriLCEnv) {
         if (req.url === '/internal/v1/seat-wake' && req.method === 'POST') {
           try {
             const chunks: Buffer[] = [];
-            for await (const chunk of req) chunks.push(chunk);
+            try {
+              for await (const chunk of req) chunks.push(chunk);
+            } catch {
+              return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
+            }
             const raw = Buffer.concat(chunks).toString('utf-8');
             let parsed: unknown = {};
             if (raw.length > 0) {
@@ -2211,8 +2219,12 @@ export function createTriLCApp(env: TriLCEnv) {
         // 校验先行（400/422/409 矩阵见 init-assemble.ts）→ 预写段 → 提交段 → 事件。
         if (req.url === '/internal/v1/init/assemble' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
+          try {
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
           }
           const raw = Buffer.concat(chunks).toString('utf-8');
           let body: unknown = null;
@@ -2289,8 +2301,12 @@ export function createTriLCApp(env: TriLCEnv) {
         // （REQ-016 断点续接机制沿用，init-state.ts 零改动）。
         if (req.url === '/internal/v1/init/onboarding/progress' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
+          try {
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
           }
           const raw = Buffer.concat(chunks).toString('utf-8');
           let body: unknown = null;
@@ -2327,8 +2343,12 @@ export function createTriLCApp(env: TriLCEnv) {
         // （/internal/v1/init/events 同通道）。
         if (req.url === '/internal/v1/projects/link' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
+          try {
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
           }
           const raw = Buffer.concat(chunks).toString('utf-8');
           let body: unknown = null;
@@ -2356,8 +2376,12 @@ export function createTriLCApp(env: TriLCEnv) {
         // 链态门同 link：仅 project-link 生效。
         if (req.url === '/internal/v1/projects/claim' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
+          try {
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
           }
           const raw = Buffer.concat(chunks).toString('utf-8');
           let body: unknown = null;
@@ -2409,8 +2433,12 @@ export function createTriLCApp(env: TriLCEnv) {
         // 进度经 init:sync-* 事件族（/internal/v1/init/events 同通道）。
         if (req.url === '/internal/v1/init/sync/run' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
+          try {
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
           }
           const raw = Buffer.concat(chunks).toString('utf-8');
           let body: Record<string, unknown> = {};
@@ -2469,8 +2497,12 @@ export function createTriLCApp(env: TriLCEnv) {
         // 快照 confirmed → transitionTo('ready') → init:step-event。
         if (req.url === '/internal/v1/init/confirm' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
+          try {
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
           }
           const raw = Buffer.concat(chunks).toString('utf-8');
           let body: Record<string, unknown> = {};
@@ -2498,8 +2530,12 @@ export function createTriLCApp(env: TriLCEnv) {
         // （daemon 只绑定 127.0.0.1）；两入口零执行增量（只读呈现）。
         if (req.url === '/internal/v1/init/ready/first-collab' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
+          try {
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
           }
           const raw = Buffer.concat(chunks).toString('utf-8');
           let body: Record<string, unknown> = {};
@@ -2538,8 +2574,12 @@ export function createTriLCApp(env: TriLCEnv) {
           }
 
           const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
+          try {
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
           }
           const raw = Buffer.concat(chunks).toString('utf-8');
           let body: { includeProject?: boolean; purgeWorktree?: boolean } = {};
@@ -2595,7 +2635,11 @@ export function createTriLCApp(env: TriLCEnv) {
         // 勾选候选 → 登记 pending-cho 请求（CHO 审批门）。链态门：开业完成后才可增员。
         if (req.url === '/internal/v1/staffing/onboard' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) chunks.push(chunk);
+          try {
+            for await (const chunk of req) chunks.push(chunk);
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
+          }
           let body: Record<string, unknown> = {};
           try { body = JSON.parse(Buffer.concat(chunks).toString('utf-8')); } catch {
             res.writeHead(400, { 'content-type': 'application/json' });
@@ -2616,7 +2660,11 @@ export function createTriLCApp(env: TriLCEnv) {
         // CHO 审批：approved → CompanyInitState.employees 写入 + 审计 json；rejected → 终态记录。
         if (req.url === '/internal/v1/staffing/decide' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) chunks.push(chunk);
+          try {
+            for await (const chunk of req) chunks.push(chunk);
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
+          }
           let body: Record<string, unknown> = {};
           try { body = JSON.parse(Buffer.concat(chunks).toString('utf-8')); } catch {
             res.writeHead(400, { 'content-type': 'application/json' });
@@ -2780,8 +2828,12 @@ export function createTriLCApp(env: TriLCEnv) {
         // permission → response: 'allow' | 'deny' | 'always'
         if (req.url === '/internal/v1/interactions/answer' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
+          try {
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
           }
           const raw = Buffer.concat(chunks).toString('utf-8');
           let body: { id?: string; response?: unknown } = {};
@@ -2823,8 +2875,12 @@ export function createTriLCApp(env: TriLCEnv) {
 
         if (req.url === '/v1/messages' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
+          try {
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
           }
           const raw = Buffer.concat(chunks).toString('utf-8');
 
@@ -3082,8 +3138,12 @@ export function createTriLCApp(env: TriLCEnv) {
         // ── POST /internal/v1/agent ──
         if (req.url?.startsWith('/internal/v1/agent') && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
+          try {
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
           }
           const raw = Buffer.concat(chunks).toString('utf-8');
 
@@ -3254,8 +3314,12 @@ export function createTriLCApp(env: TriLCEnv) {
         // Used by opencode custom provider (Vercel AI SDK @ai-sdk/openai-compatible).
         if (req.url === '/chat/completions' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
+          try {
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
           }
           const raw = Buffer.concat(chunks).toString('utf-8');
 
@@ -3479,8 +3543,12 @@ export function createTriLCApp(env: TriLCEnv) {
         // If sessionId is omitted, a new one is created.
         if (req.url === '/internal/v1/sessions' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
+          try {
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
           }
           const raw = Buffer.concat(chunks).toString('utf-8');
           let body: {
@@ -3599,8 +3667,12 @@ export function createTriLCApp(env: TriLCEnv) {
         // Response: RecoveryResult with session, messages, and safety report.
         if (req.url === '/internal/v1/sessions/recover' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
+          try {
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
           }
           const raw = Buffer.concat(chunks).toString('utf-8');
           let body: { sessionId?: string; includeSafetyCheck?: boolean } = {};
@@ -3691,7 +3763,11 @@ export function createTriLCApp(env: TriLCEnv) {
         if (req.url === '/internal/v1/notify' && req.method === 'POST') {
           const SOURCE_SEAT_WHITELIST: ReadonlySet<string> = new Set(['mc-echo-pull']);
           const chunks: Buffer[] = [];
-          for await (const chunk of req) chunks.push(chunk as Buffer);
+          try {
+            for await (const chunk of req) chunks.push(chunk as Buffer);
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
+          }
           const raw = Buffer.concat(chunks);
           if (raw.byteLength > 16 * 1024) {
             console.log('[trilc:notify-in] reject: payload-too-large (over 16KB envelope cap)');
@@ -3796,8 +3872,12 @@ export function createTriLCApp(env: TriLCEnv) {
         // Response 201: { sessionId, streamEndpoint, status }
         if (req.url === '/internal/v1/tasks/submit' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) {
-            chunks.push(chunk);
+          try {
+            for await (const chunk of req) {
+              chunks.push(chunk);
+            }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
           }
           const raw = Buffer.concat(chunks).toString('utf-8');
 
@@ -4432,7 +4512,11 @@ export function createTriLCApp(env: TriLCEnv) {
 
             // Parse optional body for custom instructions
             const chunks: Buffer[] = [];
-            for await (const chunk of req) chunks.push(chunk);
+            try {
+              for await (const chunk of req) chunks.push(chunk);
+            } catch {
+              return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
+            }
             let body: { instructions?: string; persist?: boolean } = {};
             try { body = JSON.parse(Buffer.concat(chunks).toString('utf-8')); } catch { /* empty body OK */ }
 
@@ -4472,7 +4556,11 @@ export function createTriLCApp(env: TriLCEnv) {
         // Add a new cron job. Body: CronJobCreate JSON.
         if (req.url === '/internal/v1/cron/jobs' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) { chunks.push(chunk); }
+          try {
+            for await (const chunk of req) { chunks.push(chunk); }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
+          }
           const raw = Buffer.concat(chunks).toString('utf-8');
           let body: Record<string, unknown> = {};
           try { body = JSON.parse(raw); } catch {
@@ -4528,7 +4616,11 @@ export function createTriLCApp(env: TriLCEnv) {
           }
           const jobId = decodeURIComponent(jobIdMatch[1]);
           const chunks: Buffer[] = [];
-          for await (const chunk of req) { chunks.push(chunk); }
+          try {
+            for await (const chunk of req) { chunks.push(chunk); }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
+          }
           const raw = Buffer.concat(chunks).toString('utf-8');
           let body: Record<string, unknown> = {};
           try { body = JSON.parse(raw); } catch {
@@ -4592,7 +4684,11 @@ export function createTriLCApp(env: TriLCEnv) {
           }
           const jobId = decodeURIComponent(jobIdMatch[1]);
           const chunks: Buffer[] = [];
-          for await (const chunk of req) { chunks.push(chunk); }
+          try {
+            for await (const chunk of req) { chunks.push(chunk); }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
+          }
           const raw = Buffer.concat(chunks).toString('utf-8');
           let body: { force?: boolean } = {};
           try { body = JSON.parse(raw); } catch { /* empty body OK */ }
@@ -4665,7 +4761,11 @@ export function createTriLCApp(env: TriLCEnv) {
         // GET: clients pull unread notifications; ?ack=1 marks read.
         if (req.url === '/internal/v1/notifications' && req.method === 'POST') {
           const chunks: Buffer[] = [];
-          for await (const chunk of req) { chunks.push(chunk); }
+          try {
+            for await (const chunk of req) { chunks.push(chunk); }
+          } catch {
+            return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
+          }
           let body: Record<string, unknown> = {};
           try { body = JSON.parse(Buffer.concat(chunks).toString('utf-8')); } catch { /* ignore */ }
           const notice = {
@@ -4794,7 +4894,11 @@ export function createTriLCApp(env: TriLCEnv) {
           }
           try {
             const chunks: Buffer[] = [];
-            for await (const chunk of req) chunks.push(chunk);
+            try {
+              for await (const chunk of req) chunks.push(chunk);
+            } catch {
+              return; // abort 防御（债② 同族·fddb630 markRead 正形照铸）：客户端中途断连 ECONNRESET→请求作废零崩
+            }
             const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
             const { getMcpClientManager } = await import('../tools/mcp-tool.js');
             const mcp = getMcpClientManager();
