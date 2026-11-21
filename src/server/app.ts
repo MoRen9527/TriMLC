@@ -2893,7 +2893,7 @@ export function createTriLCApp(env: TriLCEnv) {
             return;
           }
 
-          const model = parsed.model ?? 'tmv-deepseek-v4-pro';
+          const model = parsed.model ?? 'deepseek-flash'; // CTO 裁②判据①generic 兜底统一（2026-11-21）
           // Step 4: End-to-end verification — log received model parameter
           console.log(`[trilc] /v1/messages model=${model}`);
           const maxTurns = parsed.max_tokens ? Math.min(Math.ceil(parsed.max_tokens / 100), 25) : 25;
@@ -3222,7 +3222,7 @@ export function createTriLCApp(env: TriLCEnv) {
 
           // ── Local agentLoop fallback ──
           const loopOptions: AgentLoopOptions = {
-            model: parsed.model ?? 'tmv-deepseek-v4-pro',
+            model: parsed.model ?? 'deepseek-flash', // CTO 裁②判据①generic 兜底统一（2026-11-21）
             systemPrompt: parsed.systemPrompt ?? '',
             messages: parsed.messages ?? [],
             maxTurns: parsed.maxTurns ?? 25,
@@ -3332,7 +3332,7 @@ export function createTriLCApp(env: TriLCEnv) {
             return;
           }
 
-          const model = parsed.model ?? 'tmv-deepseek-v4-pro';
+          const model = parsed.model ?? 'deepseek-flash'; // CTO 裁②判据①generic 兜底统一（2026-11-21）
           const maxTurns = parsed.max_tokens ? Math.min(Math.ceil(parsed.max_tokens / 100), 25) : 25;
 
           // TC-001: 执行持续性三机制字段解析（与 /v1/messages 对齐）；
@@ -3928,7 +3928,7 @@ export function createTriLCApp(env: TriLCEnv) {
           }
 
           const sessionId = `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-          const model = getKeyCache()?.defaultModel ?? process.env.TRIMODEL_DEFAULT_MODEL ?? 'tmv-deepseek-v4-pro';
+          const model = getKeyCache()?.defaultModel ?? process.env.TRIMODEL_DEFAULT_MODEL ?? 'deepseek-flash'; // CTO 裁② 2026-11-21 兜底统一
           // i2-1 §三 init 模式路由：链态 ∈ 初始化阶段且无 client systemPrompt
           // （非员工 agent 显式会话）→ init 模式 bootstrap 替代 defaultSystemPrompt；
           // 员工合同装配路径（6.4）与自检第五探测（显式 systemPrompt）不动。
@@ -5336,7 +5336,7 @@ function validateModelRegistry(): void {
 
     const defaultModel = getKeyCache()?.defaultModel
       ?? process.env.TRIMODEL_DEFAULT_MODEL
-      ?? 'tmv-deepseek-v4-pro';
+      ?? 'deepseek-flash'; // CTO 裁②判据①generic 兜底统一（2026-11-21；5344 criticalFallbacks=tmv 专属保不动）
 
     // Known ultimate fallback targets — these MUST be in the registry for
     // agent-core's Tier 2 recovery to work. If missing, tmv-* models will

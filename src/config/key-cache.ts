@@ -375,7 +375,7 @@ async function fetchConfigFromCardApi(apiUrl: string, apiToken?: string): Promis
     return {
       ok: true,
       keys: keysFromPullEntries(json.entries ?? {}),
-      defaultModel: json.default_model ?? 'tmv-deepseek-v4-pro',
+      defaultModel: json.default_model ?? 'deepseek-flash', // CTO 裁② 2026-11-21 兜底统一
       strategy: json.strategy ?? null,
       refreshIntervalS: json.refresh_interval_s ?? KEY_REFRESH_INTERVAL_S_DEFAULT,
     };
