@@ -342,6 +342,48 @@ describe('LG-058 N4 config 命令族（refreshNow/describeConfig/verifyPull/clea
     }
   });
 
+  it('b 补装填（CTO 裁 2026-11-21）：boot cache 空→timer 零装填→refreshNow 成功→补装填；幂等门防双 timer', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'trimlc-kc-refill-'));
+    const restore = pinSandboxEnv();
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.map(String).join(' ')); };
+    try {
+      // boot：pull 失败 → cache 空 → initKeyCache `if (_keyCache)` 装填门不过
+      const bootFail = withMockFetch(async () => new Response('{}', { status: 500 }));
+      try {
+        await initKeyCache('http://127.0.0.1:3333', dir, 'tok');
+        assert.equal(getKeyCache(), null, 'boot cache 空（装填门不过前置态）');
+        assert.equal(logs.filter((l) => l.includes('refresh timer:')).length, 0, 'boot 后 timer 未装填');
+      } finally {
+        bootFail();
+      }
+      // 服务端恢复 → 手动 pull 成功 → b 补装填生效
+      const recover = withMockFetch(async () => new Response(JSON.stringify({
+        object: 'config.card-pull', face: 'mlc', card_present: true,
+        default_model: 'deepseek-flash', entries: pullEntriesFixture(),
+        strategy: null, refresh_interval_s: 900,
+      }), { status: 200, headers: { 'content-type': 'application/json' } }));
+      try {
+        const r = await refreshNow();
+        assert.equal(r.ok, true);
+        assert.equal(logs.filter((l) => l.includes('refresh timer: every 900s')).length, 1,
+          'b 补装填：timer 装填行现形（boot 空 cache 边缘态）');
+        // 幂等：再 refreshNow → startRefreshTimer L552 `if (_refreshTimer) return` 防双 timer
+        await refreshNow();
+        assert.equal(logs.filter((l) => l.includes('refresh timer: every 900s')).length, 1,
+          '幂等门防双 timer');
+      } finally {
+        recover();
+      }
+    } finally {
+      console.log = origLog;
+      stopKeyCache();
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('describeConfig 梯归因三态：tier3-env / tier2-cache-fresh / tier2-cache-stale-grace（7 天硬限=tier3）', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'trimlc-kc-n4-'));
     const restore = pinSandboxEnv();
