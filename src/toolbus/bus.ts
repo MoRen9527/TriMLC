@@ -1,11 +1,5 @@
-export type ToolInvocation = {
-  toolName: string;
-  input: Record<string, unknown>;
-};
-
-export class ToolBus {
-  async invoke(invocation: ToolInvocation): Promise<{ ok: boolean }> {
-    console.log('[trilc/toolbus] invoke', invocation.toolName);
-    return { ok: true };
-  }
-}
+// ── Tool bus (tool invocation surface) (thin shell · C5 local-runtime convergence) ──
+// Moved into @tricompany/local-runtime/toolbus (single source of truth; CTO ruling
+// 2026-11-21, RLC form-source first). This forwarding shell keeps every existing
+// relative import path working unchanged.
+export * from '@tricompany/local-runtime/toolbus';

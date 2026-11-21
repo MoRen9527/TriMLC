@@ -49,7 +49,8 @@
     "wrap-ansi": "^10.0.0",
     "yaml": "^2.9.0",
     "yoga-layout": "npm:yoga-layout-prebuilt@^1.10.0",
-    "yoga-layout-prebuilt": "^1.10.0"
+    "yoga-layout-prebuilt": "^1.10.0",
+    "@tricompany/local-runtime": "file:../TriLocalRuntime"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
