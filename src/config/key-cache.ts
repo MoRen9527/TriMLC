@@ -650,6 +650,14 @@ export async function refreshNow(): Promise<ManualPullResult> {
       message: 'key cache not initialized (daemon boot incomplete)', attribution: null };
   }
   const mode = await doRefresh(_apiUrl, _apiToken);
+  // b 补装填（CTO 裁·铸件族统排窗 2026-11-21）：boot 时 cache 空→initKeyCache 的
+  // `if (_keyCache)` 门不装填 timer 的缺陷修形——手动 pull 成功后补装填周期刷新。
+  // startRefreshTimer 内 L552 `if (_refreshTimer) return` 幂等门防双 timer。
+  // 生效绑 daemon 重启（码面变更·Node 冷加载）。
+  if (mode !== 'failed' && !_refreshTimer) {
+    const c = getKeyCache();
+    if (c) startRefreshTimer(_apiUrl, c.refreshIntervalS, _apiToken);
+  }
   const cache = getKeyCache();
   const st = getKeyCacheStatus();
   if (mode === 'failed') {
