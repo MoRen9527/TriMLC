@@ -64,11 +64,23 @@ try {
 
 const batch = unread.slice(0, INJECT_LIMIT);
 const restCount = unread.length - batch.length;
+// ── 宿主输出分支（bod-copilot 收信链·CEO 令 2026-11-27 23:14·CTO 派工件②）──
+// 缺省 'cc'=逐行 [M-SG NOTIFY]（CC UserPromptSubmit stdout 契约·现形零变化）；
+// NOTIFY_HOOK_OUTPUT=copilot → 单行 JSON {"systemMessage":"<同信文>"}（Copilot CLI hook 契约）。
+// 判宿主=显式 env（勿用 env 探测隐式分叉）；同信箱·同批纯文本信·零信内容改动·仅包装形。
+// 嵌套转义=JSON.stringify（禁手拼——信文含引号/换行面）。
+const HOOK_OUTPUT = (process.env.NOTIFY_HOOK_OUTPUT || '').trim().toLowerCase();
+const lines = [];
 for (const l of batch) {
-  console.log('[M-SG NOTIFY] ' + String(l.title || '') + ' | ' + String(l.body || '').slice(0, 200));
+  lines.push('[M-SG NOTIFY] ' + String(l.title || '') + ' | ' + String(l.body || '').slice(0, 200));
 }
 if (restCount > 0) {
-  console.log('[M-SG NOTIFY] …另有 ' + restCount + ' 件历史未读（清理候令）');
+  lines.push('[M-SG NOTIFY] …另有 ' + restCount + ' 件历史未读（清理候令）');
+}
+if (HOOK_OUTPUT === 'copilot') {
+  console.log(JSON.stringify({ systemMessage: lines.join('\n') }));
+} else {
+  for (const line of lines) console.log(line);
 }
 
 // 件②注入即标读：stdout 输出后并行 POST（daemon 单进程端点=写原子）；agent:false+
