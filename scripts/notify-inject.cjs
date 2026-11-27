@@ -24,6 +24,10 @@
 // 实勘 2026-11-20）——hook env 链不可达→缺省写现役 8713；port 变更属部署面变更，
 // 届时同步本缺省或设 TRILC_PORT env（毕报载明候 CTO 勘修窗裁量）。
 'use strict';
+// ── 平台早退（bod-copilot 收信链·CTO 复核 2026-11-27：注册件=本机 Windows 专用形——
+//    cmd /c+D:/ 路径在 Linux Copilot 会话必败；注入器层 platform 早退=非 Windows 零输出零副作用，
+//    不在非本机面制造怪态。Linux 面命令级 spawn 失败语义（是否阻断 prompt）候验·低概率场景。）
+if (process.platform !== 'win32') process.exit(0);
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
