@@ -70,7 +70,13 @@ const batch = unread.slice(0, INJECT_LIMIT);
 const restCount = unread.length - batch.length;
 // ── 宿主输出分支（bod-copilot 收信链·CEO 令 2026-11-27 23:14·CTO 派工件②）──
 // 缺省 'cc'=逐行 [M-SG NOTIFY]（CC UserPromptSubmit stdout 契约·现形零变化）；
-// NOTIFY_HOOK_OUTPUT=copilot → 单行 JSON {"systemMessage":"<同信文>"}（Copilot CLI hook 契约）。
+// NOTIFY_HOOK_OUTPUT=copilot → 单行 JSON **{"additionalContext":"<同信文>"}**（Copilot CLI hook 契约）。
+//   2026-11-28 CTO 实测勘正：Copilot CLI（@github/copilot 1.0.51 app.js）把钩子 stdout 先 JSON.parse，
+//   userPromptSubmitted 只消费 additionalContext／modifiedPrompt／suppressOutput／handled／responseContent
+//   五键——此前输出的 {"systemMessage":…} 不在消费集=静默丢弃（三红实锚：copilot「无系统消息」）。
+//   临时项目活体实证：{"additionalContext":"MARKER-ZQ7…"} → 模型复述 ZQ7 ✓。
+//   另一前置：.github/hooks/ 仓库钩子仅在文件夹受信（trustedFolders）时加载（提示模式=开关
+//   GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS=true 或已受信）——实测开关关=NONE。
 // 判宿主=显式 env（勿用 env 探测隐式分叉）；同信箱·同批纯文本信·零信内容改动·仅包装形。
 // 嵌套转义=JSON.stringify（禁手拼——信文含引号/换行面）。
 const HOOK_OUTPUT = (process.env.NOTIFY_HOOK_OUTPUT || '').trim().toLowerCase();
@@ -82,7 +88,7 @@ if (restCount > 0) {
   lines.push('[M-SG NOTIFY] …另有 ' + restCount + ' 件历史未读（清理候令）');
 }
 if (HOOK_OUTPUT === 'copilot') {
-  console.log(JSON.stringify({ systemMessage: lines.join('\n') }));
+  console.log(JSON.stringify({ additionalContext: lines.join('\n') }));
 } else {
   for (const line of lines) console.log(line);
 }
